@@ -1,4 +1,4 @@
-use super::module;
+use super::data::Data;
 
 struct Module {
   subscriber: Vec<i32>,
