@@ -1,7 +1,10 @@
-use crate::{context::{cur_ctx, cur_ctx_mut, IsElement, Parented}, Reference};
+use std::fmt::Display;
+
+use crate::{context::Parented, Reference};
 
 #[derive(Clone, PartialEq, Eq, Hash)]
 enum DataKind {
+  Void,
   Int,
   UInt,
   Float,
@@ -18,11 +21,14 @@ pub trait Typed {
 }
 
 impl DataType {
-
   fn new(kind: DataKind, bits: usize) -> Self {
+    Self { kind, bits }
+  }
+
+  pub fn void() -> Self {
     Self {
-      kind,
-      bits,
+      kind: DataKind::Void,
+      bits: 0,
     }
   }
 
@@ -41,19 +47,17 @@ impl DataType {
   pub fn bits(&self) -> usize {
     self.bits
   }
-
 }
 
 impl ToString for DataType {
-  
   fn to_string(&self) -> String {
     match self.kind {
       DataKind::Int => format!("i{}", self.bits),
       DataKind::UInt => format!("u{}", self.bits),
       DataKind::Float => format!("f{}", self.bits),
+      DataKind::Void => String::from("()"),
     }
   }
-
 }
 
 pub struct IntImm {
@@ -69,30 +73,38 @@ impl Typed for IntImm {
 }
 
 impl Parented for IntImm {
-
   fn parent(&self) -> Option<Reference> {
     None
   }
-
 }
 
 impl IntImm {
-
-  pub(super) fn instantiate(dtype: DataType, value: u64) -> Self {
-    Self { key: 0, dtype, value, }
+  pub(super) fn new(dtype: DataType, value: u64) -> Self {
+    Self {
+      key: 0,
+      dtype,
+      value,
+    }
   }
+}
 
-  pub fn new<'a>(dtype: &DataType, value: u64) -> &'a Box<IntImm> {
-    let res = cur_ctx_mut().int_imm(dtype, value);
-    res.as_ref::<IntImm>().unwrap()
+impl IntImm {
+  pub fn to_string(&self) -> String {
+    format!("({} as {})", self.value, self.dtype.to_string())
   }
-
 }
 
 pub struct Array {
   pub(crate) key: usize,
+  name: String,
   scalar_ty: DataType,
   size: usize,
+}
+
+impl Display for Array {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    write!(f, "Array: {} {}[{}]", self.dtype().to_string(), self.name, self.size)
+  }
 }
 
 impl Typed for Array {
@@ -101,82 +113,21 @@ impl Typed for Array {
   }
 }
 
-pub struct ArrayRead {
-  pub(crate) key: usize,
-  parent: Option<Reference>,
-  dtype: DataType,
-  array: Reference,
-  idx: Reference,
-}
-
-pub struct ArrayWrite {
-  pub(crate) key: usize,
-  parent: Option<Reference>,
-  array: Reference,
-  idx: Reference,
-  value: Reference,
-}
-
-impl Parented for ArrayRead {
-
-  fn parent(&self) -> Option<Reference> {
-    self.parent.clone()
-  }
-
-}
-
-impl Typed for ArrayRead {
-
-  fn dtype(&self) -> &DataType {
-    &self.dtype
-  }
-
-}
-
 impl Array {
-
-  pub fn new<'a>(scalar_ty: DataType, size: usize) -> &'a Box<Array> {
-    let res = Self {
+  pub fn new(scalar_ty: DataType, name: String, size: usize) -> Array {
+    Self {
       key: 0,
       scalar_ty,
+      name,
       size,
-    };
-    let key = cur_ctx_mut().insert(res);
-    cur_ctx().get(&key).unwrap()
+    }
   }
 
-  pub fn size(&self) -> usize {
+  pub fn get_size(&self) -> usize {
     self.size
   }
 
-  pub fn read<'a, 'b>(&self, idx: &Box<impl IsElement<'b> + Parented + Typed>,
-                      reader: Reference) -> &'a Box<ArrayRead> {
-    let instance = ArrayRead {
-      key: 0,
-      parent: Some(reader),
-      dtype: self.scalar_ty.clone(),
-      array: self.as_super(),
-      idx: idx.as_super(),
-    };
-    let res = cur_ctx_mut().insert(instance);
-    res.as_ref::<ArrayRead>().unwrap()
+  pub fn get_name(&self) -> &str {
+    self.name.as_str()
   }
-
-  pub fn write<'a, 'b>(&self,
-                       idx: &Box<impl IsElement<'a> + Parented + Typed>,
-                       value: &Box<impl IsElement<'b> + Parented + Typed>,
-                       cond: Option<Reference>) -> &'a Box<ArrayWrite> {
-
-    let instance = ArrayWrite {
-      key: 0,
-      parent: None,
-      array: self.as_super(),
-      idx: idx.as_super(),
-      value: value.as_super(),
-    };
-    let res = cur_ctx_mut().insert(instance);
-    res.as_ref::<ArrayWrite>().unwrap()
-  }
-
 }
-

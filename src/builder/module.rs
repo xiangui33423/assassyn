@@ -1,20 +1,26 @@
-use crate::{arith::Expr, context::{cur_ctx, IsElement}, data::Typed};
+use std::collections::{HashMap, HashSet};
 
-use super::{context::{cur_ctx_mut, Reference}, event::{Event, EventKind}, port::{Input, Output}};
+use crate::{
+  context::Reference,
+  data::{Array, Typed},
+  expr::{Expr, Opcode},
+};
 
+use super::{port::Input, system::SysBuilder};
+
+/// The data structure for a module.
 pub struct Module {
   pub(crate) key: usize,
-  pub(crate) parent: Option<Reference>,
   name: String,
   inputs: Vec<Reference>,
   dfg: Vec<Reference>,
-  outputs: Vec<Reference>,
+  /// The set of arrays used in the module.
+  array_used: HashMap<Reference, HashSet<Opcode>>,
 }
 
-pub struct Driver { }
+pub struct Driver {}
 
 impl Module {
-
   /// Returns a reference to the created new module.
   ///
   /// # Arguments
@@ -28,30 +34,14 @@ impl Module {
   /// let a = Input::new("a", 32);
   /// Module::new("a_plus_b", vec![a.clone()]);
   /// ```
-  pub fn new(name: &str, inputs: Vec<Reference>) -> &Box<Module> {
-    let module = Module {
+  pub fn new(name: &str, inputs: Vec<Reference>) -> Module {
+    Module {
       key: 0,
-      parent: None,
       name: name.to_string(),
       inputs,
       dfg: Vec::new(),
-      outputs: Vec::new(),
-    };
-    let res = cur_ctx_mut().insert(module);
-    cur_ctx_mut().get::<Module>(&res).unwrap().inputs.iter().for_each(|elem| {
-      elem.as_mut::<Input>().unwrap().parent = Some(res.clone());
-    });
-    cur_ctx().get::<Module>(&res).unwrap()
-  }
-
-  /// Get the required element from the given vector and cast it to the required type.
-  ///
-  /// # Arguments
-  ///
-  /// `v` - The vector of references.
-  /// `i` - The index of the element.
-  fn get_and_cast<'a, T: IsElement<'a>>(v: &'a Vec<Reference>, i: usize) -> Option<&Box<T>> {
-    v.get(i).map(|elem| elem.as_ref::<T>().unwrap())
+      array_used: HashMap::new(),
+    }
   }
 
   /// Get the given input reference.
@@ -59,74 +49,66 @@ impl Module {
   /// # Arguments
   ///
   /// * `i` - The index of the input.
-  pub fn get_input(&self, i: usize) -> Option<&Box<Input>> {
-    Self::get_and_cast(&self.inputs, i)
+  pub fn get_input(&self, i: usize) -> Option<&Reference> {
+    self.inputs.get(i)
   }
 
-  /// Get the given output reference.
-  ///
-  /// # Arguments
-  ///
-  /// * `i` - The index of the outout.
-  pub fn get_output(&self, i: usize) -> Option<&Box<Output>> {
-    Self::get_and_cast(&self.outputs, i)
+  pub fn get_name(&self) -> &str {
+    self.name.as_str()
   }
 
-  // TODO(@were): Check if outputs are set.
-  // TODO(@were): Check the given references are with deta.
-  // TODO(@were): Check the given references are part of the module.
-  pub fn set_outputs(&mut self, outputs: Vec<Reference>) {
-    self.outputs = outputs.into_iter().map(|data| { Output::new(data) }).collect();
+  pub(crate) fn push(&mut self, expr: Reference) -> Reference {
+    self.dfg.push(expr);
+    self.dfg.last().unwrap().clone()
   }
 
-  // TODO(@were): Later make this implicit.
-  pub fn push(&mut self, expr: Reference) -> Reference {
-    self.dfg.push(expr.clone());
-    expr
+  pub(super) fn insert_array_used(&mut self, array: Reference, opcode: Opcode) {
+    if !self.array_used.contains_key(&array) {
+      self.array_used.insert(array.clone(), HashSet::new());
+    }
+    let operations = self.array_used.get_mut(&array).unwrap();
+    operations.insert(opcode);
   }
 
-  // TODO(@were): This is a temporary solution for proof of concept.
-  pub fn elaborate(&self, data: Vec<usize>) {
-    println!("fn {}(", self.name);
+  pub(crate) fn array_iter<'a>(
+    &'a self,
+    sys: &'a SysBuilder,
+  ) -> impl Iterator<Item = (&'a Box<Array>, &'a HashSet<Opcode>)> {
+    self.array_used.iter().map(|(k, v)| (k.as_ref::<Array>(sys).unwrap(), v))
+  }
+
+  pub fn port_iter<'a>(&'a self, sys: &'a SysBuilder) -> impl Iterator<Item = &'a Box<Input>> {
+    self.inputs.iter().map(|x| x.as_ref::<Input>(sys).unwrap())
+  }
+
+  pub fn expr_iter<'a>(&'a self, sys: &'a SysBuilder) -> impl Iterator<Item = &'a Box<Expr>> {
+    self.dfg.iter().map(|x| x.as_ref::<Expr>(sys).unwrap())
+  }
+
+  pub fn to_string(&self, sys: &SysBuilder, mut ident: usize) -> String {
+    let mut res = String::new();
+    res.push_str(format!("{}module {}(", " ".repeat(ident), self.name).as_str());
     for elem in self.inputs.iter() {
-      let elem = elem.as_ref::<Input>().unwrap();
-      println!("  {}: u{},", elem.name(), elem.dtype().bits());
+      let elem = elem.as_ref::<Input>(sys).unwrap();
+      res.push_str(format!("{}: {}, ", elem.get_name(), elem.dtype().to_string()).as_str());
     }
-    print!(") -> (");
-    // TODO(@were): Fix this hardcoded stuff.
-    for elem in self.outputs.iter() {
-      print!("{}, ", elem.dtype().unwrap().to_string());
+    res.push_str(") {\n");
+    ident += 2;
+    if self.name.eq("driver") {
+      res.push_str(format!("{}while true {{\n", " ".repeat(ident)).as_str());
+      ident += 2;
     }
-    println!(") {{");
     for elem in self.dfg.iter() {
-      let expr = elem.as_ref::<Expr>().unwrap();
-      println!("  {}", expr.to_string());
+      let expr = elem.as_ref::<Expr>(sys).unwrap();
+      res.push_str(format!("{}{}\n", " ".repeat(ident), expr.to_string(sys)).as_str());
     }
-    println!("}}\n");
-
-    println!("fn main() {{");
-    print!("  {}(", self.name);
-    for elem in data {
-      print!("{}, ", elem);
+    if self.name.eq("driver") {
+      ident -= 2;
+      res.push_str(format!("{}}}\n", " ".repeat(ident)).as_str());
     }
-    println!(");");
-    println!("}}");
-
+    ident -= 2;
+    res.push_str(" ".repeat(ident).as_str());
+    res.push_str("}\n");
+    res
   }
-
-  pub fn trigger(&self, other: &Module, data: Vec<Reference>) -> Event {
-    Event::new(self.as_super(), other.as_super(), data, EventKind::Trigger)
-  }
-
-  /// Test the condition until it is true and then trigger the given module.
-  pub fn spin_trigger(&self, other: &Module, data: Vec<Reference>, cond: Reference) -> Event {
-    Event::new(self.as_super(), other.as_super(), data, EventKind::Spin(cond))
-  }
-
-  /// Test the condition until it is true and then trigger the given module.
-  pub fn cond_trigger(&self, other: &Module, data: Vec<Reference>, cond: Reference) -> Event{
-    Event::new(self.as_super(), other.as_super(), data, EventKind::Cond(cond))
-  }
-
 }
-
