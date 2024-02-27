@@ -18,7 +18,7 @@ pub trait IsElement<'a> {
 }
 
 pub trait Parented {
-  fn parent(&self) -> Option<Reference>;
+  fn parent(&self) -> Reference;
 }
 
 macro_rules! register_element {
@@ -142,12 +142,12 @@ impl Reference {
   }
 }
 
-pub trait Visitor<T> {
-  fn visit_module(&mut self, module: &Module) -> T;
-  fn visit_input(&mut self, input: &Input) -> T;
-  fn visit_expr(&mut self, expr: &Expr) -> T;
-  fn visit_array(&mut self, array: &Array) -> T;
-  fn visit_int_imm(&mut self, int_imm: &IntImm) -> T;
+pub trait Visitor<'a, T> {
+  fn visit_module(&mut self, module: &'a Module) -> T;
+  fn visit_input(&mut self, input: &'a Input) -> T;
+  fn visit_expr(&mut self, expr: &'a Expr) -> T;
+  fn visit_array(&mut self, array: &'a Array) -> T;
+  fn visit_int_imm(&mut self, int_imm: &'a IntImm) -> T;
 }
 
 pub enum Element {
