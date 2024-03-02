@@ -1,11 +1,9 @@
 use crate::{
-  builder::{mutator::Mutable, system::SysBuilder},
   data::{DataType, Typed},
-  reference::{IsElement, Parented},
-  register_mutator,
+  node::{ExprMut, IsElement, Parented},
 };
 
-use super::{block::Block, reference::Reference};
+use super::{block::Block, node::BaseNode};
 
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 pub enum Opcode {
@@ -24,6 +22,7 @@ pub enum Opcode {
   ILT,
   IGE,
   ILE,
+  EQ,
   // Eventual operations
   Trigger,
   SpinTrigger,
@@ -60,6 +59,7 @@ impl ToString for Opcode {
       Opcode::ILT => "<".into(),
       Opcode::IGE => ">=".into(),
       Opcode::ILE => "<=".into(),
+      Opcode::EQ => "==".into(),
       Opcode::Load => "load".into(),
       Opcode::Store => "store".into(),
       Opcode::Trigger => "trigger".into(),
@@ -70,18 +70,18 @@ impl ToString for Opcode {
 
 pub struct Expr {
   pub(super) key: usize,
-  parent: Reference,
+  parent: BaseNode,
   dtype: DataType,
   opcode: Opcode,
-  operands: Vec<Reference>,
+  operands: Vec<BaseNode>,
 }
 
 impl Expr {
   pub(crate) fn new(
     dtype: DataType,
     opcode: Opcode,
-    operands: Vec<Reference>,
-    parent: Reference,
+    operands: Vec<BaseNode>,
+    parent: BaseNode,
   ) -> Self {
     Self {
       key: 0,
@@ -96,7 +96,7 @@ impl Expr {
     self.opcode.clone()
   }
 
-  pub fn get_operand(&self, i: usize) -> Option<&Reference> {
+  pub fn get_operand(&self, i: usize) -> Option<&BaseNode> {
     self.operands.get(i)
   }
 
@@ -104,10 +104,9 @@ impl Expr {
     self.operands.len()
   }
 
-  pub fn operand_iter(&self) -> impl Iterator<Item = &Reference> {
+  pub fn operand_iter(&self) -> impl Iterator<Item = &BaseNode> {
     self.operands.iter()
   }
-
 }
 
 impl Typed for Expr {
@@ -117,20 +116,17 @@ impl Typed for Expr {
 }
 
 impl Parented for Expr {
-  fn get_parent(&self) -> Reference {
+  fn get_parent(&self) -> BaseNode {
     self.parent.clone()
   }
 
-  fn set_parent(&mut self, parent: Reference) {
+  fn set_parent(&mut self, parent: BaseNode) {
     self.parent = parent;
   }
 }
 
-register_mutator!(ExprMut, Expr);
-
 impl ExprMut<'_> {
-
-  pub fn move_to_new_parent(&mut self, new_parent: Reference, at: Option<usize>) {
+  pub fn move_to_new_parent(&mut self, new_parent: BaseNode, at: Option<usize>) {
     let old_parent = self.get().get_parent();
     let expr = self.get().upcast();
     let mut block_mut = self.sys.get_mut::<Block>(&old_parent).unwrap();
@@ -139,5 +135,4 @@ impl ExprMut<'_> {
     new_parent_mut.insert_at(at, expr);
     self.get_mut().set_parent(new_parent)
   }
-
 }
