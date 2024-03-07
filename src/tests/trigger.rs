@@ -16,9 +16,11 @@ fn trigger() {
     );
     let (a, b) = {
       let module = module.as_ref::<Module>(&sys).unwrap();
-      let i0 = module.get_input(0).unwrap();
-      let i1 = module.get_input(1).unwrap();
-      (i0.clone(), i1.clone())
+      let i0 = module.get_input(0).unwrap().clone();
+      let i1 = module.get_input(1).unwrap().clone();
+      let a = sys.create_fifo_pop(&i0, None, None);
+      let b = sys.create_fifo_pop(&i1, None, None);
+      (a, b)
     };
     sys.create_add(None, &a, &b, None);
     module
@@ -68,7 +70,7 @@ fn trigger() {
   let times_invoked = String::from_utf8(output.stdout)
     .unwrap()
     .lines()
-    .filter(|x| x.contains("Invoking module a_plus_b"))
+    .filter(|x| x.contains("Simulating module a_plus_b"))
     .count();
   assert_eq!(times_invoked, 100);
 }
