@@ -20,6 +20,8 @@ try some proof of concepts in test cases.
 cargo test --lib
 ````
 
+Refer our (developer doc)[./docs/design-doc.md] for more details.
+
 ## Why yet another RTL generator?
 
 Designing circuits using RTL exposes excessive low-level details to users, from the

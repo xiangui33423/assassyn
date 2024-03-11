@@ -27,4 +27,5 @@ fn spin_trigger() {
   println!("{}", sys);
   xform::rewrite_spin_triggers(&mut sys);
   println!("{}", sys);
+
 }
