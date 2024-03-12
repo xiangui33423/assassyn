@@ -50,17 +50,15 @@ pub fn rewrite_spin_triggers(sys: &mut SysBuilder) {
       parent.get_name().to_string()
     };
     let mut mutator = sys.get_mut::<Expr>(&spin_trigger).unwrap();
-    // dest module
-    let dest_module = mutator.get().get_operand(0).unwrap().clone();
-    // cond array
-    let cond_array = mutator.get().get_operand(1).unwrap().clone();
-    // data array index
-    let cond_array_idx = mutator.get().get_operand(2).unwrap().clone();
+    // Conditional lock.
+    let lock_handle = mutator.get().get_operand(0).unwrap().clone();
+    // Destination module
+    let dest_module = mutator.get().get_operand(1).unwrap().clone();
     // data to new trigger
     let data = mutator
       .get()
       .operand_iter()
-      .skip(3)
+      .skip(2)
       .map(|x| x.clone())
       .collect::<Vec<_>>();
     // mutator.sys.create_trigger(dst, data, cond)
@@ -78,17 +76,25 @@ pub fn rewrite_spin_triggers(sys: &mut SysBuilder) {
       .sys
       .create_module(format!("{}.async.agent", parent_name).as_str(), ports);
     // Create trigger to the agent module.
-    mutator.sys.set_current_module(parent.clone());
-    mutator.sys.set_insert_before(mutator.get().upcast());
-    mutator.sys.create_trigger(&agent, data, None);
+    mutator.sys.set_current_module(&parent);
+    mutator.sys.set_insert_before(&mutator.get().upcast());
+    mutator.sys.create_bundled_trigger(&agent, data, None);
     // Create trigger to the destination module.
-    mutator.sys.set_current_module(agent.clone());
+    mutator.sys.set_current_module(&agent);
     let agent_module = mutator.sys.get_current_module().unwrap();
-    let data_to_dst = agent_module.port_iter().map(|x| x.upcast()).collect();
-    let cond = mutator.sys.create_array_read(&cond_array, &cond_array_idx, None);
-    mutator.sys.create_trigger(&dest_module, data_to_dst, Some(cond.clone()));
+    let agent_ports = agent_module.port_iter().map(|x| x.upcast()).collect::<Vec<_>>();
+    let cond = mutator.sys.create_array_read(&lock_handle, None);
+    let block = mutator.sys.create_block(Some(cond.clone()));
+    mutator.sys.set_current_block(block.clone());
+    let data_to_dst = agent_ports
+      .iter()
+      .map(|x| mutator.sys.create_fifo_pop(x, None, None))
+      .collect::<Vec<_>>();
+    mutator.sys.create_bundled_trigger(&dest_module, data_to_dst, None);
+    mutator.sys.set_insert_before(&block);
     let flip_cond = mutator.sys.create_flip(&cond, None);
-    mutator.sys.create_trigger(&agent, vec![], Some(flip_cond));
+    // Send the data from agent to the actual inokee.
+    mutator.sys.create_async_trigger(&agent, Some(flip_cond));
     mutator.erase_from_parent();
   } else {
     println!("No spin triggers found");

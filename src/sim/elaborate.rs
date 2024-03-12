@@ -6,7 +6,7 @@ use std::{
 
 use crate::{
   builder::system::SysBuilder,
-  data::Typed,
+  data::{Handle, Typed},
   expr::{Expr, Opcode},
   ir::{block::Block, port::FIFO, visitor::Visitor},
   node::{
@@ -109,7 +109,7 @@ impl Visitor<String> for ElaborateModule<'_> {
     res.push_str(") {\n");
     res.push_str(
       format!(
-        "  println!(\"{{}}:{{:04}} @Cycle {{}}: Simulating module {}\", file!(), line!(), stamp);\n",
+        "  println!(\"@line:{{:<6}} {{}}: Simulating module {}\", line!(), cyclize(stamp));\n",
         module.get_name()
       )
       .as_str(),
@@ -152,18 +152,28 @@ impl Visitor<String> for ElaborateModule<'_> {
     } else {
       match expr.get_opcode() {
         Opcode::Load => {
+          let handle = expr
+            .get_operand(0)
+            .unwrap()
+            .as_ref::<Handle>(expr.sys)
+            .unwrap();
           format!(
             "{}[{} as usize]",
-            expr.get_operand(0).unwrap().to_string(self.sys),
-            expr.get_operand(1).unwrap().to_string(self.sys)
+            handle.get_array().to_string(expr.sys),
+            handle.get_idx().to_string(expr.sys)
           )
         }
         Opcode::Store => {
+          let handle = expr
+            .get_operand(0)
+            .unwrap()
+            .as_ref::<Handle>(expr.sys)
+            .unwrap();
           format!(
-            "{}[{} as usize] = {}",
-            expr.get_operand(0).unwrap().to_string(self.sys),
+            "q.push(Reverse(Event{{ stamp: stamp + 50, kind: EventKind::Array_commit_{}({} as usize, {}) }}))",
+            handle.get_array().to_string(expr.sys),
+            handle.get_idx().to_string(expr.sys),
             expr.get_operand(1).unwrap().to_string(self.sys),
-            expr.get_operand(2).unwrap().to_string(self.sys)
           )
         }
         Opcode::Trigger => {
@@ -173,7 +183,10 @@ impl Visitor<String> for ElaborateModule<'_> {
             .as_ref::<Module>(self.sys)
             .unwrap();
           let module_name = module_ref.get_name();
-          format!("q.push(Reverse(Event::Module_{}(stamp + 1)))", module_name)
+          format!(
+            "q.push(Reverse(Event{{ stamp: stamp + 100, kind: EventKind::Module_{} }}))",
+            module_name
+          )
         }
         Opcode::FIFOPop => {
           // TODO(@were): Support multiple pop.
@@ -205,7 +218,10 @@ impl Visitor<String> for ElaborateModule<'_> {
             .get_name()
             .to_string();
           let fifo_name = fifo.get_name();
-          format!("{}_{}.push_back({})", module_name, fifo_name, value)
+          format!(
+            "q.push(Reverse(Event{{ stamp: stamp + 50, kind: EventKind::FIFO_push_{}_{}({}) }}))",
+            module_name, fifo_name, value
+          )
         }
         _ => {
           assert!(expr.get_opcode().is_unary() || expr.get_opcode().is_binary());
@@ -266,76 +282,83 @@ impl Visitor<String> for ElaborateModule<'_> {
 
 fn dump_runtime(sys: &SysBuilder, fd: &mut File, config: &Config) -> Result<(), std::io::Error> {
   fd.write("// Simulation runtime.\n".as_bytes())?;
+  // Dump the helper function of cycles.
+  // fn cyclize(stamp: usize) -> String {
+  //   format!("{}.{:02}", stamp / 100, stamp % 100")
+  // }
+  fd.write("fn cyclize(stamp: usize) -> String {\n".as_bytes())?;
+  fd.write("  format!(\"Cycle @{}.{:02}\", stamp / 100, stamp % 100)\n".as_bytes())?;
+  fd.write("}\n\n".as_bytes())?;
+
   // Dump the event enum. Each event corresponds to a module.
   // Each event instance looks like this:
   //
-  // enum Event {
-  //   Module_{module.get_name()}(time_stamp, args),
+  // enum EventKind {
+  //   Module_{module.get_name()},
   //   ...
+  //   FIFO_push_{module.get_name()}_{port.get_name()}(value),
+  //   ...
+  //   Array_commit_{array.get_name()}(idx, value),
   // }
   fd.write("#[derive(Debug, Eq, PartialEq)]\n".as_bytes())?;
-  fd.write("enum Event {\n".as_bytes())?;
+  fd.write("enum EventKind {\n".as_bytes())?;
   for module in sys.module_iter() {
-    fd.write(format!("  Module_{}(usize),\n", module.get_name()).as_bytes())?;
+    fd.write(format!("  Module_{},\n", module.get_name()).as_bytes())?;
+    for port in module.port_iter() {
+      fd.write(
+        format!(
+          "  FIFO_push_{}_{}({}),\n",
+          module.get_name(),
+          port.get_name(),
+          port.scalar_ty().to_string(),
+        )
+        .as_bytes(),
+      )?;
+    }
   }
-  fd.write("}\n".as_bytes())?;
-
-  // Dump the event stamp functions.
-  // impl Event {
-  //   fn get_stamp(&self) -> usize {
-  //      match self {
-  //        Event::Module_{module.get_name()}(stamp, _) => *stamp,
-  //        ...
-  //      }
-  //   }
-  // }
-  fd.write("impl Event {\n".as_bytes())?;
-  fd.write("  fn get_stamp(&self) -> usize {\n".as_bytes())?;
-  fd.write("    match self {\n".as_bytes())?;
-  for module in sys.module_iter() {
+  for array in sys.array_iter() {
     fd.write(
       format!(
-        "      Event::Module_{}(stamp) => *stamp,\n",
-        module.get_name()
+        "  Array_commit_{}(usize, {}),\n",
+        array.get_name(),
+        array.scalar_ty().to_string()
       )
       .as_bytes(),
     )?;
   }
-  fd.write("    }\n".as_bytes())?;
-  fd.write("  }\n".as_bytes())?;
-  fd.write("}\n".as_bytes())?;
-  // Dump the event order comparison.
-  // impl std::cmp::PartialOrd for Event {
-  //   fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-  //     if self.get_stamp() == other.get_stamp() {
-  //       match (self, other) {
-  //         (Event::Module_driver(_, _), _) => Some(Ordering::Less),
-  //         _ => Some(Ordering::Equal),
-  //       }
-  //     }
-  //     Some(self.get_stamp().cmp(&other.get_stamp()))
-  //   }
+  fd.write("}\n\n".as_bytes())?;
+
+  // Dump the event runtime.
+  // #[derive(Debug, Eq, PartialEq)]
+  // struct Event {
+  //   stamp: usize,
+  //   kind: EventKind,
   // }
+  fd.write("#[derive(Debug, Eq, PartialEq)]\n".as_bytes())?;
+  fd.write("struct Event {\n".as_bytes())?;
+  fd.write("  stamp: usize,\n".as_bytes())?;
+  fd.write("  kind: EventKind,\n".as_bytes())?;
+  fd.write("}\n\n".as_bytes())?;
+
+  // Dump the event order comparison.
   // impl std::cmp::Ord for Event {
   //   fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
   //     self.partial_cmp(other).unwrap()
   //   }
   // }
-  fd.write("impl PartialOrd for Event {\n".as_bytes())?;
-  fd.write("  fn partial_cmp(&self, other: &Self) -> Option<Ordering> {\n".as_bytes())?;
-  fd.write("    if self.get_stamp() == other.get_stamp() {\n".as_bytes())?;
-  fd.write("      match (self, other) {\n".as_bytes())?;
-  fd.write("        (Event::Module_driver(_), _) => Some(std::cmp::Ordering::Less),\n".as_bytes())?;
-  fd.write("        _ => Some(std::cmp::Ordering::Equal),\n".as_bytes())?;
-  fd.write("      }\n".as_bytes())?;
-  fd.write("    } else {\n".as_bytes())?;
-  fd.write("      Some(self.get_stamp().cmp(&other.get_stamp()))\n".as_bytes())?;
-  fd.write("    }\n".as_bytes())?;
-  fd.write("  }\n".as_bytes())?;
-  fd.write("}\n".as_bytes())?;
+  // impl std::cmp::Eq for Event {
+  //   fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+  //     self.partial_cmp(other).unwrap()
+  //   }
+  // }
   fd.write("impl Ord for Event {\n".as_bytes())?;
   fd.write("  fn cmp(&self, other: &Self) -> Ordering {\n".as_bytes())?;
   fd.write("    self.partial_cmp(other).unwrap()\n".as_bytes())?;
+  fd.write("  }\n".as_bytes())?;
+  fd.write("}\n\n".as_bytes())?;
+  fd.write("impl PartialOrd for Event {\n".as_bytes())?;
+  fd.write("  fn partial_cmp(&self, other: &Self) -> Option<Ordering> {\n".as_bytes())?;
+  fd.write("    Some(self.stamp.cmp(&other.stamp))\n".as_bytes())?;
   fd.write("  }\n".as_bytes())?;
   fd.write("}\n\n".as_bytes())?;
 
@@ -376,20 +399,16 @@ fn dump_runtime(sys: &SysBuilder, fd: &mut File, config: &Config) -> Result<(), 
   fd.write("  let mut q = BinaryHeap::new();\n".as_bytes())?;
   // Push the initial events.
   fd.write(format!("  for i in 0..{} {{\n", config.sim_threshold).as_bytes())?;
-  fd.write("    q.push(Reverse(Event::Module_driver(i)));\n".as_bytes())?;
+  fd.write(
+    "    q.push(Reverse(Event{stamp: i * 100, kind: EventKind::Module_driver}));\n".as_bytes(),
+  )?;
   fd.write("  }\n".as_bytes())?;
   // TODO(@were): Dump the time stamp of the simulation.
   fd.write("  while let Some(event) = q.pop() {\n".as_bytes())?;
-  fd.write("    match event.0 {\n".as_bytes())?;
+  fd.write("    match event.0.kind {\n".as_bytes())?;
   for module in sys.module_iter() {
-    fd.write(
-      format!(
-        "      Event::Module_{}(src_stamp) => {{\n",
-        module.get_name(),
-      )
-      .as_bytes(),
-    )?;
-    fd.write(format!("        {}(src_stamp, &mut q", module.get_name()).as_bytes())?;
+    fd.write(format!("      EventKind::Module_{} => {{\n", module.get_name(),).as_bytes())?;
+    fd.write(format!("        {}(event.0.stamp, &mut q", module.get_name()).as_bytes())?;
     for (i, port) in module.port_iter().enumerate() {
       fd.write(
         format!(
@@ -416,15 +435,62 @@ fn dump_runtime(sys: &SysBuilder, fd: &mut File, config: &Config) -> Result<(), 
       fd.write("      }\n".as_bytes())?;
     } else {
       fd.write("        idled += 1;\n".as_bytes())?;
-      fd.write("        stamp = src_stamp;\n".as_bytes())?;
+      fd.write("        stamp = event.0.stamp;\n".as_bytes())?;
       fd.write("      }\n".as_bytes())?;
     }
+  }
+  for module in sys.module_iter() {
+    for port in module.port_iter() {
+      fd.write(
+        format!(
+          "      EventKind::FIFO_push_{}_{}(value) => {{\n",
+          module.get_name(),
+          port.get_name()
+        )
+        .as_bytes(),
+      )?;
+      fd.write(
+        format!(
+          "        println!(\"@line:{{:<6}} {{}}: Commit FIFO {}.{} push {{}}\", line!(), cyclize(event.0.stamp), value);\n",
+          module.get_name(),
+          port.get_name()
+        )
+        .as_bytes(),
+      )?;
+      fd.write(
+        format!(
+          "        {}_{}.push_back(value);\n",
+          module.get_name(),
+          port.get_name()
+        )
+        .as_bytes(),
+      )?;
+      fd.write("      }\n".as_bytes())?;
+    }
+  }
+  for array in sys.array_iter() {
+    fd.write(
+      format!(
+        "      EventKind::Array_commit_{}(idx, value) => {{\n",
+        array.get_name()
+      )
+      .as_bytes(),
+    )?;
+    fd.write(
+      format!(
+        "        println!(\"@line:{{:<6}} {{}}: Commit array {} write\", line!(), cyclize(event.0.stamp));\n",
+        array.get_name()
+      )
+      .as_bytes(),
+    )?;
+    fd.write(format!("        {}[idx] = value;\n", array.get_name()).as_bytes())?;
+    fd.write("      }\n".as_bytes())?;
   }
   fd.write("    }\n".as_bytes())?;
   fd.write(format!("    if idled > {} {{\n", config.idle_threshold).as_bytes())?;
   fd.write(
     format!(
-      "      println!(\"Idled more than {} cycles, exit @{{}}!\", stamp);\n",
+      "      println!(\"Idled more than {} cycles, exit @{{}}!\", cyclize(stamp));\n",
       config.idle_threshold
     )
     .as_bytes(),
@@ -432,7 +498,7 @@ fn dump_runtime(sys: &SysBuilder, fd: &mut File, config: &Config) -> Result<(), 
   fd.write("      break;\n".as_bytes())?;
   fd.write("    }\n".as_bytes())?;
   fd.write("  }\n".as_bytes())?;
-  fd.write("  println!(\"No event to simulate @{}!\", stamp);\n".as_bytes())?;
+  fd.write("  println!(\"No event to simulate {}!\", cyclize(stamp));\n".as_bytes())?;
   fd.write("}\n\n".as_bytes())?;
   Ok(())
 }

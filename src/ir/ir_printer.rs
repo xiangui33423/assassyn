@@ -171,28 +171,31 @@ impl Visitor<String> for IRPrinter<'_> {
       match expr.get_opcode() {
         Opcode::Load => {
           format!(
-            "_{} = {}[{}]",
+            "_{} = {}",
             expr.get_key(),
             expr.get_operand(0).unwrap().to_string(self.sys),
-            expr.get_operand(1).unwrap().to_string(self.sys)
           )
         }
         Opcode::Store => {
           format!(
-            "{}[{}] = {} // handle: _{}",
+            "{} = {} // handle: _{}",
             expr.get_operand(0).unwrap().to_string(self.sys),
             expr.get_operand(1).unwrap().to_string(self.sys),
-            expr.get_operand(2).unwrap().to_string(self.sys),
             expr.get_key()
           )
         }
         Opcode::Trigger => {
-          let mut res = format!("call {}(", expr.get_operand(0).unwrap().to_string(self.sys));
+          let mut res = format!(
+            "async call {}, timing [",
+            expr.get_operand(0).unwrap().to_string(self.sys)
+          );
           for op in expr.operand_iter().skip(1) {
-            res.push_str(op.to_string(self.sys).as_str());
-            res.push_str(", ");
+            res.push('_');
+            res.push_str(op.get_key().to_string().as_str());
+            res.push(',');
+            res.push(' ');
           }
-          res.push_str(")");
+          res.push(']');
           res
         }
         Opcode::SpinTrigger => {
@@ -200,10 +203,9 @@ impl Visitor<String> for IRPrinter<'_> {
           self.indent += 2;
           res.push_str(
             format!(
-              "async {{\n{}while !{}[{}] {{ }} // Not move on until this is true\n",
+              "async {{\n{}while !{} {{ }} // DO NOT move on until this is true\n",
               " ".repeat(self.indent),
-              expr.get_operand(1).unwrap().to_string(self.sys),
-              expr.get_operand(2).unwrap().to_string(self.sys),
+              expr.get_operand(0).unwrap().to_string(self.sys),
             )
             .as_str(),
           );
@@ -211,11 +213,11 @@ impl Visitor<String> for IRPrinter<'_> {
             format!(
               "{}call {}(",
               " ".repeat(self.indent),
-              expr.get_operand(0).unwrap().to_string(self.sys)
+              expr.get_operand(1).unwrap().to_string(self.sys)
             )
             .as_str(),
           );
-          for op in expr.operand_iter().skip(3) {
+          for op in expr.operand_iter().skip(2) {
             res.push_str(op.to_string(self.sys).as_str());
             res.push_str(", ");
           }
@@ -252,7 +254,13 @@ impl Visitor<String> for IRPrinter<'_> {
             module.get_name().to_string()
           };
           let fifo_name = fifo.get_name();
-          format!("{}.{}.push({})", module_name, fifo_name, value)
+          format!(
+            "{}.{}.push({}) // handle: _{}",
+            module_name,
+            fifo_name,
+            value,
+            expr.get_key()
+          )
         }
         _ => {
           panic!("Unimplemented opcode: {:?}", expr.get_opcode());

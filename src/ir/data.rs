@@ -1,4 +1,6 @@
-#[derive(Clone, PartialEq, Eq, Hash)]
+use crate::{node::NodeKind, BaseNode};
+
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub enum DataType {
   Void,
   Int(usize),
@@ -79,6 +81,40 @@ impl IntImm {
   pub fn get_value(&self) -> u64 {
     self.value
   }
+}
+
+/// Handle is like a "pointer" to an array element.
+/// It is similar to LLVM's `GetElementPtrInst`, but 1-d.
+pub struct Handle {
+  pub(crate) key: usize,
+  /// The array to be accessed.
+  array: BaseNode,
+  /// The index of the array.
+  idx: BaseNode,
+}
+
+impl Handle {
+
+  pub fn new(array: BaseNode, idx: BaseNode) -> Self {
+    Self {
+      key: 0,
+      array,
+      idx,
+    }
+  }
+
+  pub fn get_array(&self) -> &BaseNode {
+    &self.array
+  }
+
+  pub fn get_idx(&self) -> &BaseNode {
+    &self.idx
+  }
+
+  pub fn is_const(&self) -> bool {
+    self.get_idx().get_kind() == NodeKind::IntImm
+  }
+
 }
 
 pub struct Array {

@@ -1,31 +1,45 @@
-use crate::{builder::system::SysBuilder, node::IsElement, xform, BaseNode, DataType};
+use crate::{
+  builder::system::{PortInfo, SysBuilder},
+  node::IsElement,
+  xform, BaseNode, DataType, Module,
+};
 
 #[test]
 fn spin_trigger() {
-
-  fn empty(sys: &mut SysBuilder) -> BaseNode {
-    sys.create_module("empty", vec![])
+  fn squarer(sys: &mut SysBuilder) -> BaseNode {
+    let int32 = DataType::int(32);
+    let port = PortInfo::new("i0", int32);
+    let module = sys.create_module("square", vec![port]);
+    sys.set_current_module(&module);
+    let i0 = {
+      let module = module.as_ref::<Module>(sys).unwrap();
+      let i0_port = module.get_input(0).unwrap().clone();
+      sys.create_fifo_pop(&i0_port, None, None)
+    };
+    sys.create_mul(None, &i0, &i0, None);
+    module
   }
 
   fn driver(sys: &mut SysBuilder, dst: BaseNode) {
     let driver = sys.get_driver().upcast();
-    sys.set_current_module(driver);
+    sys.set_current_module(&driver);
     let int32 = DataType::int(32);
-    let a = sys.create_array(&int32, "a", 1);
+    let stamp = sys.create_array(&int32, "stamp", 1);
     let zero = sys.get_const_int(&int32, 0);
-    let a0 = sys.create_array_read(&a, &zero, None);
+    let handle = sys.create_handle(&stamp, &zero);
+    let a0 = sys.create_array_read(&handle, None);
     let one = sys.get_const_int(&int32, 1);
     let plused = sys.create_add(None, &a0, &one, None);
-    sys.create_array_write(&a, &zero, &plused, None);
+    sys.create_array_write(&handle, &plused, None);
     let lock = sys.create_array(&DataType::int(1), "lock", 1);
-    sys.create_spin_trigger(&lock, &zero, &dst, vec![], None);
+    let lock_handle = sys.create_handle(&lock, &zero);
+    sys.create_spin_trigger(&lock_handle, &dst, vec![a0], None);
   }
 
   let mut sys = SysBuilder::new("main");
-  let empty_module = empty(&mut sys);
-  driver(&mut sys, empty_module);
+  let sqr_module = squarer(&mut sys);
+  driver(&mut sys, sqr_module);
   println!("{}", sys);
   xform::rewrite_spin_triggers(&mut sys);
   println!("{}", sys);
-
 }

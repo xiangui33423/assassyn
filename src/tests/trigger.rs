@@ -14,6 +14,7 @@ fn trigger() {
         PortInfo::new("b", int32.clone()),
       ],
     );
+    sys.set_current_module(&module);
     let (a, b) = {
       let module = module.as_ref::<Module>(&sys).unwrap();
       let i0 = module.get_input(0).unwrap().clone();
@@ -28,17 +29,18 @@ fn trigger() {
 
   fn build_driver(sys: &mut SysBuilder, plus: BaseNode) {
     let driver_module = sys.get_driver();
-    sys.set_current_module(driver_module.upcast());
+    sys.set_current_module(&driver_module.upcast());
     let int32 = DataType::int(32);
     let a = sys.create_array(&int32, "cnt", 1);
     let zero = sys.get_const_int(&int32, 0);
     let one = sys.get_const_int(&int32, 1);
-    let a0 = sys.create_array_read(&a, &zero, None);
+    let handle = sys.create_handle(&a, &zero);
+    let a0 = sys.create_array_read(&handle, None);
     let hundred = sys.get_const_int(&int32, 100);
     let cond = sys.create_ilt(None, &a0, &hundred, None);
-    sys.create_trigger(&plus, vec![a0.clone(), a0.clone()], Some(cond));
+    sys.create_bundled_trigger(&plus, vec![a0.clone(), a0.clone()], Some(cond));
     let acc = sys.create_add(None, &a0, &one, None);
-    sys.create_array_write(&a, &zero, &acc, None);
+    sys.create_array_write(&handle, &acc, None);
   }
 
   let mut sys = SysBuilder::new("main");
