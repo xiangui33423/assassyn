@@ -20,7 +20,7 @@ try some proof of concepts in test cases.
 cargo test --lib
 ````
 
-Refer our (developer doc)[./docs/design-doc.md] for more details.
+Refer our [developer doc](./docs/developers.md.md) for more details.
 
 ## Why yet another RTL generator?
 
