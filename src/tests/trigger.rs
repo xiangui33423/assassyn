@@ -1,7 +1,6 @@
 use super::utils;
 use crate::builder::system::{PortInfo, SysBuilder};
-use crate::node::IsElement;
-use crate::{sim, DataType, Module, BaseNode};
+use crate::{sim, BaseNode, DataType, Module};
 
 #[test]
 fn trigger() {
@@ -19,28 +18,30 @@ fn trigger() {
       let module = module.as_ref::<Module>(&sys).unwrap();
       let i0 = module.get_input(0).unwrap().clone();
       let i1 = module.get_input(1).unwrap().clone();
-      let a = sys.create_fifo_pop(&i0, None, None);
-      let b = sys.create_fifo_pop(&i1, None, None);
+      let a = sys.create_fifo_pop(&i0, None);
+      let b = sys.create_fifo_pop(&i1, None);
       (a, b)
     };
-    sys.create_add(None, &a, &b, None);
+    sys.create_add(None, &a, &b);
     module
   }
 
   fn build_driver(sys: &mut SysBuilder, plus: BaseNode) {
-    let driver_module = sys.get_driver();
-    sys.set_current_module(&driver_module.upcast());
+    let driver = sys.create_module("driver", vec![]);
+    sys.set_current_module(&driver);
     let int32 = DataType::int(32);
     let a = sys.create_array(&int32, "cnt", 1);
     let zero = sys.get_const_int(&int32, 0);
     let one = sys.get_const_int(&int32, 1);
     let handle = sys.create_array_ptr(&a, &zero);
-    let a0 = sys.create_array_read(&handle, None);
+    let a0 = sys.create_array_read(&handle);
     let hundred = sys.get_const_int(&int32, 100);
-    let cond = sys.create_ilt(None, &a0, &hundred, None);
-    sys.create_bundled_trigger(&plus, vec![a0.clone(), a0.clone()], Some(cond));
-    let acc = sys.create_add(None, &a0, &one, None);
-    sys.create_array_write(&handle, &acc, None);
+    let cond = sys.create_ilt(None, &a0, &hundred);
+    let block = sys.create_block(Some(cond));
+    sys.set_current_block(block);
+    sys.create_bundled_trigger(&plus, vec![a0.clone(), a0.clone()]);
+    let acc = sys.create_add(None, &a0, &one);
+    sys.create_array_write(&handle, &acc);
   }
 
   let mut sys = SysBuilder::new("main");

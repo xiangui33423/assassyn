@@ -1,7 +1,8 @@
-mod utils;
-mod trigger;
-mod pred_propa;
+mod callback;
+mod parser;
 mod spin_trigger;
+mod trigger;
+mod utils;
 
 // TODO(@were): Add an test for IR builder.
 // TODO(@were): Add assertion for predication test.
@@ -10,4 +11,3 @@ mod spin_trigger;
 fn helloworld() {
   println!("Hello, world!");
 }
-

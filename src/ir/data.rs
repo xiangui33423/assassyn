@@ -6,6 +6,7 @@ pub enum DataType {
   Int(usize),
   UInt(usize),
   Fp32,
+  Module(Vec<Box<DataType>>),
 }
 
 pub trait Typed {
@@ -15,6 +16,10 @@ pub trait Typed {
 impl DataType {
   pub fn void() -> Self {
     DataType::Void
+  }
+
+  pub fn module(inputs: Vec<DataType>) -> Self {
+    DataType::Module(inputs.into_iter().map(|x| Box::new(x)).collect())
   }
 
   pub fn int(bits: usize) -> Self {
@@ -35,6 +40,7 @@ impl DataType {
       DataType::Int(bits) => *bits,
       DataType::UInt(bits) => *bits,
       DataType::Fp32 => 32,
+      DataType::Module(_) => 0,
     }
   }
 
@@ -69,11 +75,19 @@ impl DataType {
 
 impl ToString for DataType {
   fn to_string(&self) -> String {
-    match self {
+    match &self {
       &DataType::Int(_) => format!("i{}", self.bits()),
       &DataType::UInt(_) => format!("u{}", self.bits()),
       &DataType::Fp32 => format!("f{}", self.bits()),
       &DataType::Void => String::from("()"),
+      &DataType::Module(args) => format!(
+        "module[{}]",
+        args
+          .iter()
+          .map(|x| x.to_string())
+          .collect::<Vec<String>>()
+          .join(", ")
+      ),
     }
   }
 }
@@ -115,13 +129,8 @@ pub struct ArrayPtr {
 }
 
 impl ArrayPtr {
-
   pub fn new(array: BaseNode, idx: BaseNode) -> Self {
-    Self {
-      key: 0,
-      array,
-      idx,
-    }
+    Self { key: 0, array, idx }
   }
 
   pub fn get_array(&self) -> &BaseNode {
@@ -135,7 +144,6 @@ impl ArrayPtr {
   pub fn is_const(&self) -> bool {
     self.get_idx().get_kind() == NodeKind::IntImm
   }
-
 }
 
 pub struct Array {

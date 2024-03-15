@@ -1,11 +1,13 @@
+// TODO(@were): Remove all the predications and move to blocks.
+
 use std::{collections::HashMap, fmt::Display, ops::Add};
 
 use crate::{
-  data::{Array, ArrayPtr},
+  data::{Array, ArrayPtr, Typed},
   expr::{Expr, Opcode},
   ir::{block::Block, ir_printer, visitor::Visitor},
   node::{
-    ArrayRef, BlockRef, CacheKey, Element, IsElement, ModuleRef, Mutable, NodeKind, Referencable
+    ArrayRef, BlockRef, CacheKey, Element, IsElement, ModuleRef, Mutable, NodeKind, Referencable,
   },
   port::FIFO,
   BaseNode, DataType, IntImm, Module,
@@ -65,31 +67,20 @@ impl PortInfo {
 /// is always executed.
 macro_rules! create_arith_op_impl {
   (binary, $func_name:ident, $opcode: expr) => {
-    pub fn $func_name(
-      &mut self,
-      ty: Option<DataType>,
-      a: &BaseNode,
-      b: &BaseNode,
-      pred: Option<&BaseNode>,
-    ) -> BaseNode {
+    pub fn $func_name(&mut self, ty: Option<DataType>, a: &BaseNode, b: &BaseNode) -> BaseNode {
       let res_ty = if let Some(ty) = ty {
         ty
       } else {
         self.combine_types($opcode, a, b)
       };
-      self.create_expr(
-        res_ty,
-        $opcode,
-        vec![a.clone(), b.clone()],
-        pred.map(|x| x.clone()),
-      )
+      self.create_expr(res_ty, $opcode, vec![a.clone(), b.clone()])
     }
   };
 
   (unary, $func_name:ident, $opcode: expr) => {
-    pub fn $func_name(&mut self, x: &BaseNode, pred: Option<&BaseNode>) -> BaseNode {
+    pub fn $func_name(&mut self, x: &BaseNode) -> BaseNode {
       let res_ty = x.get_dtype(self).unwrap();
-      self.create_expr(res_ty, $opcode, vec![x.clone()], pred.map(|x| x.clone()))
+      self.create_expr(res_ty, $opcode, vec![x.clone()])
     }
   };
 }
@@ -119,7 +110,7 @@ impl SysBuilder {
   ///
   /// * `name` - The name of the system.
   pub fn new(name: &str) -> Self {
-    let mut res = Self {
+    let res = Self {
       name: name.into(),
       sym_tab: HashMap::new(),
       slab: slab::Slab::new(),
@@ -127,8 +118,6 @@ impl SysBuilder {
       inesert_point: InsertPoint(BaseNode::unknown(), BaseNode::unknown(), None),
       unique_ids: HashMap::new(),
     };
-    // TODO(@were): Make driver a self-triggered module. DO NOT use a "while true" loop.
-    res.create_module("driver", vec![]);
     res
   }
 
@@ -155,12 +144,6 @@ impl SysBuilder {
     key: &BaseNode,
   ) -> Result<T::Mutator, String> {
     Ok(T::mutator(self, key.clone()))
-  }
-
-  /// Get the driver module. The driver module is special. It is invoked unconditionally every
-  /// cycle.
-  pub fn get_driver<'a>(&'a self) -> ModuleRef<'a> {
-    self.get_module("driver").unwrap()
   }
 
   /// Get the current module to be built.
@@ -199,6 +182,11 @@ impl SysBuilder {
   pub fn set_current_module(&mut self, module: &BaseNode) {
     let block = self.get::<Module>(module).unwrap().get_body().upcast();
     self.inesert_point = InsertPoint(module.clone(), block, None);
+  }
+
+  /// Get the current insert point of this builder.
+  pub fn get_current_ip(&self) -> InsertPoint {
+    self.inesert_point.clone()
   }
 
   /// Set the current insert point to the given block.
@@ -254,6 +242,14 @@ impl SysBuilder {
   /// Get the insert point of the current builder.
   pub fn get_insert_point(&self) -> InsertPoint {
     self.inesert_point.clone()
+  }
+
+  /// Set the insert point of the current builder.
+  ///
+  /// # Arguments
+  /// * `ip` - The insert point to be set.
+  pub fn set_insert_point(&mut self, ip: InsertPoint) {
+    self.inesert_point = ip;
   }
 
   /// The helper function to insert an element into the system's slab.
@@ -333,24 +329,16 @@ impl SysBuilder {
     dtype: DataType,
     opcode: Opcode,
     operands: Vec<BaseNode>,
-    cond: Option<BaseNode>,
   ) -> BaseNode {
     self.get_current_module().unwrap();
-    if let Some(cond) = cond {
-      let block = self.create_block(cond.into());
-      let instance = Expr::new(dtype.clone(), opcode, operands, block.clone());
-      let value = self.insert_element(instance);
-      self.get_mut::<Block>(&block).unwrap().push(value.clone())
-    } else {
-      let instance = Expr::new(
-        dtype.clone(),
-        opcode,
-        operands,
-        self.inesert_point.1.clone(),
-      );
-      let value = self.insert_element(instance);
-      self.insert_at_ip(value)
-    }
+    let instance = Expr::new(
+      dtype.clone(),
+      opcode,
+      operands,
+      self.inesert_point.1.clone(),
+    );
+    let value = self.insert_element(instance);
+    self.insert_at_ip(value)
   }
 
   /// The helper function to insert an element into the current insert point.
@@ -368,53 +356,83 @@ impl SysBuilder {
   /// * `data` - The data to be sent to the destination module.
   /// * `cond` - The condition of triggering the destination. If None is given, the trigger is
   /// unconditional.
-  pub fn create_bundled_trigger(
-    &mut self,
-    dst: &BaseNode,
-    data: Vec<BaseNode>,
-    pred: Option<BaseNode>,
-  ) {
+  pub fn create_bundled_trigger(&mut self, dst: &BaseNode, data: Vec<BaseNode>) -> BaseNode {
     let current_module = self.get_current_module().unwrap().upcast();
-    let dst_module = dst.as_ref::<Module>(self).unwrap();
-    let ports = dst_module
-      .port_iter()
-      .map(|x| x.upcast())
-      .collect::<Vec<_>>();
 
-    let restore_ip = if let Some(pred) = pred {
-      let restore_ip = self.get_insert_point();
-      let new_block = self.create_block(pred.into());
-      self.inesert_point.1 = new_block;
-      self.inesert_point.2 = None;
-      Some(restore_ip)
-    } else {
-      None
+    // Handle callback trigger
+    let (ports, types) = {
+      match dst.get_kind() {
+        NodeKind::Module => {
+          let dst_module = dst.as_ref::<Module>(self).unwrap();
+          (
+            dst_module
+              .port_iter()
+              .map(|x| x.upcast())
+              .collect::<Vec<_>>()
+              .into(),
+            None,
+          )
+        }
+        NodeKind::Expr => {
+          let expr = dst.as_ref::<Expr>(self).unwrap();
+          assert_eq!(expr.get_opcode(), Opcode::FIFOPop);
+          let ty = expr.get().dtype();
+          if let DataType::Module(types) = ty {
+            (
+              None,
+              types
+                .iter()
+                .map(|x| x.as_ref().clone())
+                .collect::<Vec<_>>()
+                .into(),
+            )
+          } else {
+            panic!("Invalid destination, {:?}", dst);
+          }
+        }
+        _ => panic!("Invalid destination"),
+      }
     };
 
     let mut args = vec![dst.clone()];
-    assert_eq!(ports.len(), data.len(), "Data size mismatch");
-    for (port, arg) in ports.iter().zip(data.iter()) {
-      {
-        let port = port.as_ref::<FIFO>(self).unwrap();
-        assert_eq!(port.scalar_ty(), arg.get_dtype(self).unwrap());
+    let res = if let Some(ports) = ports {
+      assert_eq!(ports.len(), data.len(), "Data size mismatch!");
+      for (port, arg) in ports.iter().zip(data.iter()) {
+        {
+          let port = port.as_ref::<FIFO>(self).unwrap();
+          assert_eq!(port.scalar_ty(), arg.get_dtype(self).unwrap());
+        }
+        let push = self.create_fifo_push(&port, arg.clone());
+        args.push(push);
+        self
+          .get_mut::<Module>(&current_module)
+          .unwrap()
+          .insert_external_interface(port.clone(), Opcode::FIFOPush);
       }
-      let push = self.create_fifo_push(&port, arg.clone(), None);
-      args.push(push);
-      self
-        .get_mut::<Module>(&current_module)
-        .unwrap()
-        .insert_external_interface(port.clone(), Opcode::FIFOPush);
-    }
-    // TODO: Make all FIFO push associate to this trigger to enforce the timing of data arrival.
-    self.create_expr(DataType::void(), Opcode::Trigger, args, None);
-
-    if let Some(restore_ip) = restore_ip {
-      self.inesert_point = restore_ip;
-    }
+      // TODO: Make all FIFO push associate to this trigger to enforce the timing of data arrival.
+      self.create_expr(DataType::void(), Opcode::Trigger, args)
+    } else if let Some(types) = types {
+      assert_eq!(types.len(), data.len(), "Signature mismatch!");
+      for (ty, arg) in types.iter().zip(data.iter()) {
+        assert_eq!(ty, &arg.get_dtype(self).unwrap());
+        args.push(arg.clone());
+      }
+      self.create_expr(DataType::void(), Opcode::CallbackTrigger, args)
+    } else {
+      panic!("Invalid destination");
+    };
+    res
   }
 
-  pub fn create_async_trigger(&mut self, dst: &BaseNode, pred: Option<BaseNode>) -> BaseNode {
-    self.create_expr(DataType::void(), Opcode::Trigger, vec![dst.clone()], pred)
+  /// Create a trigger just invoke the given module (destination) without checking the readiness
+  /// of the data. This is something more like a state machine trigger.
+  ///
+  /// # Arguments
+  /// * `dst` - The destination module to be invoked.
+  /// * `pred` - The condition of triggering the destination. If None is given, the trigger is
+  /// always triggered.
+  pub fn create_async_trigger(&mut self, dst: &BaseNode) -> BaseNode {
+    self.create_expr(DataType::void(), Opcode::Trigger, vec![dst.clone()])
   }
 
   /// Create a spin trigger. A spin trigger repeats to test the condition
@@ -436,11 +454,10 @@ impl SysBuilder {
     handle: &BaseNode,
     dst: &BaseNode,
     mut data: Vec<BaseNode>,
-    pred: Option<BaseNode>,
   ) {
     data.insert(0, handle.clone());
     data.insert(1, dst.clone());
-    self.create_expr(DataType::void(), Opcode::SpinTrigger, data, pred);
+    self.create_expr(DataType::void(), Opcode::SpinTrigger, data);
   }
 
   create_arith_op_impl!(binary, create_add, Opcode::Add);
@@ -473,17 +490,11 @@ impl SysBuilder {
     key
   }
 
-  pub fn create_fifo_push(
-    &mut self,
-    fifo: &BaseNode,
-    value: BaseNode,
-    cond: Option<BaseNode>,
-  ) -> BaseNode {
+  pub fn create_fifo_push(&mut self, fifo: &BaseNode, value: BaseNode) -> BaseNode {
     let res = self.create_expr(
       DataType::void(),
       Opcode::FIFOPush,
       vec![fifo.clone(), value],
-      cond,
     );
     res
   }
@@ -493,14 +504,10 @@ impl SysBuilder {
   /// # Arguments
   /// * `ptr` - The pointer to the array element.
   /// * `cond` - The condition of reading the array. If None is given, the read is unconditional.
-  pub fn create_array_read<'elem>(
-    &mut self,
-    ptr: &BaseNode,
-    cond: Option<BaseNode>,
-  ) -> BaseNode {
+  pub fn create_array_read<'elem>(&mut self, ptr: &BaseNode) -> BaseNode {
     let array = self.get::<ArrayPtr>(&ptr).unwrap().get_array().clone();
     let dtype = self.get::<Array>(&array).unwrap().scalar_ty().clone();
-    let res = self.create_expr(dtype, Opcode::Load, vec![ptr.clone()], cond);
+    let res = self.create_expr(dtype, Opcode::Load, vec![ptr.clone()]);
     let cur_mod = self.inesert_point.0.clone();
     self
       .get_mut::<Module>(&cur_mod)
@@ -515,15 +522,10 @@ impl SysBuilder {
   /// * `ptr` - The pointer to the array element.
   /// * `value` - The value to be written.
   /// * `cond` - The condition of writing the array. If None is given, the write is unconditional.
-  pub fn create_array_write(
-    &mut self,
-    ptr: &BaseNode,
-    value: &BaseNode,
-    cond: Option<BaseNode>,
-  ) -> BaseNode {
+  pub fn create_array_write(&mut self, ptr: &BaseNode, value: &BaseNode) -> BaseNode {
     let array = self.get::<ArrayPtr>(&ptr).unwrap().get_array().clone();
     let operands = vec![ptr.clone(), value.clone()];
-    let res = self.create_expr(DataType::void(), Opcode::Store, operands, cond);
+    let res = self.create_expr(DataType::void(), Opcode::Store, operands);
     let cur_mod = self.inesert_point.0.clone();
     self
       .get_mut::<Module>(&cur_mod)
@@ -574,19 +576,14 @@ impl SysBuilder {
   /// * `num_elems` - The number of elements to be popped. If None is given, the number of elements
   /// is one.
   /// * `cond` - The condition of popping the FIFO. If None is given, the pop is unconditional.
-  pub fn create_fifo_pop(
-    &mut self,
-    fifo: &BaseNode,
-    num_elems: Option<BaseNode>,
-    cond: Option<BaseNode>,
-  ) -> BaseNode {
+  pub fn create_fifo_pop(&mut self, fifo: &BaseNode, num_elems: Option<BaseNode>) -> BaseNode {
     let num_elems = if let Some(num_elems) = num_elems {
       num_elems
     } else {
       self.get_const_int(&DataType::uint(32), 1)
     };
     let ty = fifo.as_ref::<FIFO>(self).unwrap().scalar_ty();
-    let res = self.create_expr(ty, Opcode::FIFOPop, vec![fifo.clone(), num_elems], cond);
+    let res = self.create_expr(ty, Opcode::FIFOPop, vec![fifo.clone(), num_elems]);
     res
   }
 
