@@ -1,7 +1,4 @@
-use crate::{
-  data::{DataType, Typed},
-  node::{ExprMut, ExprRef, IsElement, Parented},
-};
+use crate::frontend::{DataType, ExprMut, ExprRef, IsElement, Parented, Typed};
 
 use super::{block::Block, node::BaseNode};
 

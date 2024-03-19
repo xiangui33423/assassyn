@@ -1,13 +1,9 @@
 use std::ops::Deref;
 
-use crate::{
-  builder::system::SysBuilder,
-  data::{Array, ArrayPtr, IntImm, Typed},
-  ir::{ir_printer::IRPrinter, visitor::Visitor},
-  DataType, Module,
-};
+use crate::frontend::*;
 
-use super::{block::Block, expr::Expr, port::FIFO};
+use super::super::ir::visitor::Visitor;
+use super::ir_printer::IRPrinter;
 
 pub trait IsElement<'elem, 'sys: 'elem> {
   fn upcast(&self) -> BaseNode;
@@ -275,14 +271,7 @@ impl BaseNode {
         let array = self.as_ref::<Array>(sys).unwrap();
         format!("{}", array.get_name())
       }
-      NodeKind::IntImm => {
-        let int_imm = self.as_ref::<IntImm>(sys).unwrap();
-        format!(
-          "({} as {})",
-          int_imm.get_value(),
-          int_imm.dtype().to_string()
-        )
-      }
+      NodeKind::IntImm => IRPrinter::new(sys).dispatch(sys, self, vec![]).unwrap(),
       NodeKind::FIFO => self.as_ref::<FIFO>(sys).unwrap().get_name().to_string(),
       NodeKind::Unknown => {
         panic!("Unknown reference")

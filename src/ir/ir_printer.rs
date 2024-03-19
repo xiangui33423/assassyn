@@ -1,15 +1,6 @@
 use std::collections::HashSet;
 
-use crate::{
-  builder::system::{InsertPoint, SysBuilder},
-  data::Typed,
-  expr::{Expr, Opcode},
-  node::{
-    ArrayRef, BlockRef, ExprRef, FIFORef, IntImmRef, IsElement, ModuleRef, NodeKind, Parented,
-  },
-  port::FIFO,
-  Module,
-};
+use crate::frontend::*;
 
 use super::{block::Block, visitor::Visitor};
 
@@ -85,12 +76,7 @@ impl Visitor<String> for IRPrinter<'_> {
   }
 
   fn visit_int_imm(&mut self, int_imm: &IntImmRef<'_>) -> Option<String> {
-    format!(
-      "({} as {})",
-      int_imm.get_value(),
-      int_imm.dtype().to_string()
-    )
-    .into()
+    format!("({}:{})", int_imm.get_value(), int_imm.dtype().to_string()).into()
   }
 
   fn visit_module(&mut self, module: &ModuleRef<'_>) -> Option<String> {

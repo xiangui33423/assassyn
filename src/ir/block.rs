@@ -1,7 +1,6 @@
-use crate::{
-  builder::system::{InsertPoint, SysBuilder},
-  node::{BlockMut, BlockRef, IsElement, ModuleRef, NodeKind, Parented},
-  BaseNode, Module,
+use crate::frontend::{
+  BaseNode, BlockMut, BlockRef, InsertPoint, IsElement, Module, ModuleRef, NodeKind, Parented,
+  SysBuilder,
 };
 
 pub struct Block {
@@ -102,11 +101,6 @@ impl BlockMut<'_> {
     let InsertPoint(_, _, at) = self.sys.inesert_point;
     let (expr, new_at) = self.insert_at(at.clone(), expr.clone());
     self.sys.inesert_point.2 = new_at;
-    expr
-  }
-
-  pub(crate) fn push(&mut self, expr: BaseNode) -> BaseNode {
-    self.get_mut().body.push(expr.clone());
     expr
   }
 
