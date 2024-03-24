@@ -1,34 +1,40 @@
 use proc_macro::TokenStream;
+use proc_macro2::Span;
 use quote::{quote, ToTokens};
 use syn::{parse::Parse, spanned::Spanned};
 
-use crate::{ArrayAccess, Instruction};
+use crate::ast::{
+  expr::{DType, Expr},
+  node::{ArrayAccess, FuncArgs, Instruction},
+};
 
-pub(crate) struct EmitType(pub(crate) TokenStream);
+use eir::frontend::DataType;
 
-impl Parse for EmitType {
-  fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
-    let tyid = input.parse::<syn::Ident>()?;
-    match tyid.to_string().as_str() {
-      "int" | "uint" => {
-        // input.parse::<syn::Token![::]>()?;
-        input.parse::<syn::Token![<]>()?;
-        let bits = input.parse::<syn::LitInt>()?;
-        input.parse::<syn::Token![>]>()?;
-        Ok(EmitType(
-          quote! { eir::frontend::DataType::#tyid(#bits) }.into(),
-        ))
-      }
-      _ => {
-        return Err(syn::Error::new(
-          tyid.span(),
-          format!("[CG.Type] Unsupported type: {}", tyid.to_string()),
-        ));
-      }
+pub(crate) fn emit_type(dtype: &DType) -> syn::Result<TokenStream> {
+  match &dtype.dtype {
+    DataType::Int(bits) => Ok(quote! { eir::frontend::DataType::int(#bits) }.into()),
+    DataType::UInt(bits) => Ok(quote! { eir::frontend::DataType::uint(#bits) }.into()),
+    DataType::Module(args) => {
+      let args = args
+        .iter()
+        .map(|x| {
+          emit_type(&DType {
+            span: dtype.span.clone(),
+            dtype: x.as_ref().clone(),
+          })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+      let args = args
+        .into_iter()
+        .map(|x| x.into())
+        .collect::<Vec<proc_macro2::TokenStream>>();
+      Ok(quote! { eir::frontend::DataType::module(vec![#(#args.into()),*]) }.into())
     }
+    _ => Err(syn::Error::new(dtype.span.into(), "Unsupported type")),
   }
 }
 
+// TODO(@were): Fully deprecate this later.
 pub(crate) struct EmitIDOrConst(pub(crate) TokenStream);
 
 impl Parse for EmitIDOrConst {
@@ -40,11 +46,12 @@ impl Parse for EmitIDOrConst {
       let lit = input.parse::<syn::LitInt>()?;
       let ty = if input.peek(syn::Token![.]) {
         input.parse::<syn::Token![.]>()?;
-        input.parse::<EmitType>()?
+        let dtype = input.parse::<DType>()?;
+        emit_type(&dtype)?
       } else {
-        EmitType(quote! { eir::frontend::DataType::int(32) }.into())
+        quote! { eir::frontend::DataType::int(32) }.into()
       };
-      let ty: proc_macro2::TokenStream = ty.0.into();
+      let ty: proc_macro2::TokenStream = ty.into();
       let res = quote! { sys.get_const_int(#ty, #lit) };
       Ok(EmitIDOrConst(res.into()))
     } else {
@@ -138,9 +145,21 @@ pub(crate) fn emit_expr_body(expr: &syn::Expr) -> syn::Result<TokenStream> {
   }
 }
 
+fn emit_parsed_expr(expr: &Expr) -> syn::Result<TokenStream> {
+  match expr {
+    Expr::Ident(id) => Ok(id.into_token_stream().into()),
+    Expr::Const((ty, lit)) => {
+      let ty = emit_type(ty)?;
+      let ty: proc_macro2::TokenStream = ty.into();
+      let res = quote! { sys.get_const_int(#ty, #lit) };
+      Ok(res.into())
+    }
+  }
+}
+
 fn emit_array_access(aa: &ArrayAccess) -> syn::Result<proc_macro2::TokenStream> {
   let id = aa.id.clone();
-  let idx: proc_macro2::TokenStream = aa.idx.clone().into();
+  let idx: proc_macro2::TokenStream = emit_parsed_expr(&aa.idx)?.into();
   Ok(
     quote! {{
       let idx = #idx;
@@ -150,19 +169,32 @@ fn emit_array_access(aa: &ArrayAccess) -> syn::Result<proc_macro2::TokenStream> 
   )
 }
 
-pub(crate) fn emit_binds(
-  args: &Vec<(proc_macro2::Ident, syn::Expr)>,
-) -> Vec<proc_macro2::TokenStream> {
-  args
-    .iter()
-    .map(|(k, v)| {
-      let value = emit_expr_body(v).expect(format!("Failed to emit {}", quote! {v}).as_str());
-      let value: proc_macro2::TokenStream = value.into();
-      quote! {
-        binds.insert(stringify!(#k).to_string(), #value)
-      }
-    })
-    .collect::<Vec<_>>()
+pub(crate) fn emit_binds(args: &FuncArgs) -> Vec<proc_macro2::TokenStream> {
+  match args {
+    FuncArgs::Bound(binds) => binds
+      .iter()
+      .map(|(k, v)| {
+        let value = emit_parsed_expr(v).expect(format!("Failed to emit {}", quote! {v}).as_str());
+        let value: proc_macro2::TokenStream = value.into();
+        quote! {
+          let value = #value.clone();
+          binds.insert(stringify!(#k).to_string(), value)
+        }
+      })
+      .collect::<Vec<_>>(),
+    FuncArgs::Plain(vec) => vec
+      .iter()
+      .enumerate()
+      .map(|(i, x)| {
+        let value = emit_parsed_expr(x).expect(format!("Failed to emit {}", quote! {x}).as_str());
+        let value: proc_macro2::TokenStream = value.into();
+        let id = syn::Ident::new(&format!("arg_{}", i), Span::call_site());
+        quote! {
+          let #id = #value.clone()
+        }
+      })
+      .collect::<Vec<_>>(),
+  }
 }
 
 pub(crate) fn emit_parse_instruction(inst: &Instruction) -> syn::Result<TokenStream> {
@@ -192,7 +224,9 @@ pub(crate) fn emit_parse_instruction(inst: &Instruction) -> syn::Result<TokenStr
           };
         }
       }
-      Instruction::AsyncCall((id, args)) => {
+      Instruction::AsyncCall(call) => {
+        let id = &call.func;
+        let args = &call.args;
         if id.to_string() == "self" {
           quote! {{
             let module = sys
@@ -209,12 +243,13 @@ pub(crate) fn emit_parse_instruction(inst: &Instruction) -> syn::Result<TokenStr
               .expect(format!("[Push Bind] {} is not a module", stringify!(#id)).as_str());
             let mut binds = std::collections::HashMap::new();
             #(#binds);*;
-            sys.create_bound_trigger(#id, binds);
+            sys.create_trigger_bound(#id, binds);
           }}
         }
       }
-      Instruction::SpinCall((lock, func, args)) => {
-        let binds = emit_binds(args);
+      Instruction::SpinCall((lock, call)) => {
+        let func = &call.func;
+        let binds = emit_binds(&call.args);
         let emitted_lock = emit_array_access(lock)?;
         quote! {{
           let callee = #func
@@ -228,6 +263,8 @@ pub(crate) fn emit_parse_instruction(inst: &Instruction) -> syn::Result<TokenStr
         .into()
       }
       Instruction::ArrayAlloc((id, ty, size)) => {
+        let ty = emit_type(ty)?;
+        let ty: proc_macro2::TokenStream = ty.into();
         quote! {
           let #id = sys.create_array(#ty, stringify!(#id), #size);
         }

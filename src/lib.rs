@@ -5,17 +5,18 @@ use syn::parse::Parse;
 use syn::punctuated::Punctuated;
 use syn::{parse_macro_input, Token};
 
+mod ast;
 mod codegen;
 mod parser;
 
-use parser::*;
+use ast::node;
 
 struct ModuleParser {
   module_name: syn::Ident,
   builder_name: syn::Ident,
-  ports: Punctuated<Argument, Token![,]>,
+  ports: Punctuated<node::PortDecl, Token![,]>,
   ext_interf: Punctuated<syn::Ident, Token![,]>,
-  body: Body,
+  body: node::Body,
   exposes: Option<Punctuated<syn::Ident, Token![,]>>,
 }
 
@@ -28,11 +29,11 @@ impl Parse for ModuleParser {
     let builder_name = syn::Ident::new(&format!("{}_builder", module_name.to_string()), tok.span());
     let raw_ports;
     bracketed!(raw_ports in input);
-    let ports = raw_ports.parse_terminated(Argument::parse, Token![,])?;
+    let ports = raw_ports.parse_terminated(node::PortDecl::parse, Token![,])?;
     let raw_ext_interf;
     bracketed!(raw_ext_interf in input);
     let ext_interf = raw_ext_interf.parse_terminated(syn::Ident::parse, Token![,])?;
-    let body = input.parse::<Body>()?;
+    let body = input.parse::<node::Body>()?;
     // .expose(<var-id>) is optional
     let exposes = if input.peek(Token![.]) {
       input.parse::<Token![.]>()?;
@@ -89,7 +90,10 @@ pub fn module_builder(input: proc_macro::TokenStream) -> proc_macro::TokenStream
         }
         .into(),
       );
-      let ty = proc_macro2::TokenStream::from(ty.clone());
+      let ty: proc_macro2::TokenStream = match codegen::emit_type(&ty) {
+        Ok(x) => x.into(),
+        Err(e) => return e.to_compile_error().into(),
+      };
       port_decls
         .extend::<TokenStream>(quote! {eir::frontend::PortInfo::new(stringify!(#id), #ty),}.into());
     }
@@ -104,7 +108,7 @@ pub fn module_builder(input: proc_macro::TokenStream) -> proc_macro::TokenStream
     }
   }
   let body: proc_macro2::TokenStream = body.into();
-  eprintln!("[Parser] Body successfully parsed!");
+  eprintln!("[Parser] node::Body successfully parsed!");
 
   // codegen external interfaces
   let ext_interf: proc_macro2::TokenStream = {
