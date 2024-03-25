@@ -1,8 +1,10 @@
 use std::collections::HashMap;
 
+use crate::frontend::Module;
+
 use super::{
   data::DataType,
-  node::{BaseNode, BindRef},
+  node::{BaseNode, BindMut, BindRef},
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -41,6 +43,16 @@ impl Bind {
   }
 }
 
+impl BindMut<'_> {
+  pub fn get_bound_mut(&mut self) -> &mut HashMap<String, BaseNode> {
+    &mut self.get_mut().bound
+  }
+
+  pub fn set_kind(&mut self, kind: BindKind) {
+    self.get_mut().kind = kind;
+  }
+}
+
 impl BindRef<'_> {
   pub fn full(&self) -> bool {
     let module_ty = self.module.get_dtype(self.sys);
@@ -52,7 +64,22 @@ impl BindRef<'_> {
 
   pub fn to_args(&self) -> Vec<BaseNode> {
     assert!(self.full());
-    self.bound.values().cloned().collect()
+    match self.get_kind() {
+      BindKind::KVBind => {
+        let module = self.module.as_ref::<Module>(self.sys).unwrap();
+        module
+          .port_iter()
+          .map(|x| self.bound.get(x.get_name()).unwrap().clone())
+          .collect()
+      }
+      BindKind::Sequential => (0..self.bound.len())
+        .map(|x| self.bound.get(&x.to_string()).unwrap().clone())
+        .collect(),
+      BindKind::Unknown => {
+        assert!(self.get_bound().is_empty());
+        vec![]
+      }
+    }
   }
 
   pub fn get_callee(&self) -> BaseNode {

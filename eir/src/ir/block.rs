@@ -87,9 +87,9 @@ impl BlockMut<'_> {
     at: Option<usize>,
     expr: BaseNode,
   ) -> (BaseNode, Option<usize>) {
-    let idx = at.unwrap_or_else(|| self.get().get_num_exprs());
-    self.get_mut().body.insert(idx, expr);
-    (self.get().get(idx).unwrap().clone(), at.map(|x| x + 1))
+    let idx = at.unwrap_or_else(|| self.elem.as_ref::<Block>(self.sys).unwrap().get_num_exprs());
+    self.get_mut().body.insert(idx, expr.clone());
+    (expr, at.map(|x| x + 1))
   }
 
   /// Insert an expression at the current insert point of the SysBuilder, and maintain the
@@ -106,8 +106,9 @@ impl BlockMut<'_> {
 
   pub(crate) fn erase(&mut self, expr: &BaseNode) {
     let idx = self
-      .get()
-      .body
+      .elem
+      .as_ref::<Block>(self.sys)
+      .unwrap()
       .iter()
       .position(|x| *x == *expr)
       .expect("Element not found");

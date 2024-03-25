@@ -457,48 +457,50 @@ impl SysBuilder {
 
   /// Add a bind to the current module.
   pub fn add_bind(&mut self, bind: BaseNode, key: String, value: BaseNode) -> BaseNode {
+    let res = bind.clone();
     let bind = bind.as_ref::<Bind>(self).unwrap();
     assert!(bind.get_kind() == BindKind::Unknown || bind.get_kind() == BindKind::KVBind);
-    let mut bound = bind.get_bound().clone();
-    assert!(!bound.contains_key(&key));
+    assert!(!bind.get_bound().contains_key(&key));
     let module = bind.get_callee().as_ref::<Module>(self).unwrap();
     let port = module.get_input_by_name(&key).unwrap();
     assert_eq!(port.scalar_ty(), value.get_dtype(self).unwrap());
     let port_idx = port.idx();
     let module = module.upcast();
-    let kind = BindKind::KVBind;
     let fifo_push = self.create_fifo_push(module.clone(), port_idx, value);
+    let mut bind = res.as_mut::<Bind>(self).unwrap();
+    bind.set_kind(BindKind::KVBind);
+    let bound = bind.get_bound_mut();
     bound.insert(key, fifo_push);
-    let instance = Bind::new(module, bound, kind);
-    let key = self.insert_element(instance);
-    key
+    res
   }
 
   /// Add a bind to the current module.
   pub fn push_bind(&mut self, bind: BaseNode, value: BaseNode) -> BaseNode {
+    let res = bind.clone();
     let bind = bind.as_ref::<Bind>(self).unwrap();
-    assert!(bind.get_kind() == BindKind::Unknown || bind.get_kind() == BindKind::Sequential);
-    let mut bound = bind.get_bound().clone();
-    let port_idx = bound.len();
     let signature = bind.get_callee_signature();
+    let callee = bind.get_callee();
+    assert!(
+      bind.get().get_kind() == BindKind::Unknown || bind.get().get_kind() == BindKind::Sequential
+    );
+    let port_idx = bind.get_bound().len();
     match &signature {
       DataType::Module(ports) => {
         eprintln!("Checking {} value types", port_idx);
         eprintln!("{:?}", value);
         assert_eq!(
-          ports.get(bound.len()).unwrap().as_ref().clone(),
+          ports.get(port_idx).unwrap().as_ref().clone(),
           value.get_dtype(self).unwrap(),
         );
       }
       _ => panic!("Invalid signature"),
     }
-    let kind = BindKind::Sequential;
-    let callee = bind.get_callee();
     let fifo_push = self.create_fifo_push(callee.clone(), port_idx, value);
+    let mut bind_mut = res.as_mut::<Bind>(self).unwrap();
+    bind_mut.set_kind(BindKind::Sequential);
+    let bound = bind_mut.get_bound_mut();
     bound.insert(port_idx.to_string(), fifo_push);
-    let instance = Bind::new(callee, bound, kind);
-    let key = self.insert_element(instance);
-    key
+    res
   }
 
   /// A helper function to create a FIFO push.

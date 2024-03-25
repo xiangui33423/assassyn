@@ -132,11 +132,13 @@ macro_rules! emit_elem_impl {
           <$name>::downcast_mut(&mut self.sys.slab, &self.elem).unwrap()
         }
 
-        pub fn get<'borrow>(&'borrow self) -> &'borrow Box<$name>
+        pub fn get<'borrow, 'res>(&'borrow self) -> [<$name Ref>]<'res>
         where
           'sys: 'borrow,
+          'sys: 'res,
+          'borrow: 'res,
         {
-          <$name>::downcast(&self.sys.slab, &self.elem).unwrap()
+          self.elem.as_ref::<$name>(self.sys).unwrap()
         }
       }
 
