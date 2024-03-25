@@ -1,5 +1,4 @@
 use proc_macro::TokenStream;
-use proc_macro2::Span;
 use quote::{quote, ToTokens};
 use syn::{parse::Parse, spanned::Spanned};
 
@@ -169,8 +168,8 @@ fn emit_array_access(aa: &ArrayAccess) -> syn::Result<proc_macro2::TokenStream> 
   )
 }
 
-pub(crate) fn emit_args(args: &FuncArgs) -> Vec<proc_macro2::TokenStream> {
-  match args {
+pub(crate) fn emit_args(func: &syn::Ident, args: &FuncArgs) -> proc_macro2::TokenStream {
+  let bind = match args {
     FuncArgs::Bound(binds) => binds
       .iter()
       .map(|(k, v)| {
@@ -178,24 +177,27 @@ pub(crate) fn emit_args(args: &FuncArgs) -> Vec<proc_macro2::TokenStream> {
         let value: proc_macro2::TokenStream = value.into();
         quote! {
           let value = #value.clone();
-          binds.insert(stringify!(#k).to_string(), value)
+          let bind = sys.add_bind(bind, stringify!(#k).to_string(), value);
         }
       })
-      .collect::<Vec<_>>(),
+      .collect::<Vec<proc_macro2::TokenStream>>(),
     FuncArgs::Plain(vec) => vec
       .iter()
-      .enumerate()
-      .map(|(i, x)| {
+      .map(|x| {
         let value = emit_parsed_expr(x).expect(format!("Failed to emit {}", quote! {x}).as_str());
         let value: proc_macro2::TokenStream = value.into();
-        let id = syn::Ident::new(&format!("arg_{}", i), Span::call_site());
         quote! {
-          let #id = #value.clone();
-          args.push(#id);
+          let value = #value.clone();
+          let bind = sys.push_bind(bind, value);
         }
       })
-      .collect::<Vec<_>>(),
+      .collect::<Vec<proc_macro2::TokenStream>>(),
+  };
+  quote! {
+    let bind = sys.get_init_bind(#func.clone());
+    #(#bind);*;
   }
+  .into()
 }
 
 pub(crate) fn emit_parse_instruction(inst: &Instruction) -> syn::Result<TokenStream> {
@@ -226,9 +228,9 @@ pub(crate) fn emit_parse_instruction(inst: &Instruction) -> syn::Result<TokenStr
         }
       }
       Instruction::AsyncCall(call) => {
-        let id = &call.func;
+        let func = &call.func;
         let args = &call.args;
-        if id.to_string() == "self" {
+        if func.to_string() == "self" {
           quote! {{
             let module = sys
               .get_current_module()
@@ -237,47 +239,32 @@ pub(crate) fn emit_parse_instruction(inst: &Instruction) -> syn::Result<TokenStr
             sys.create_self_trigger();
           }}
         } else {
-          match args {
-            FuncArgs::Bound(_) => {
-              let binds = emit_args(args);
-              quote! {{
-                let callee = #id
-                  .as_ref::<eir::frontend::Module>(sys)
-                  .expect(
-                    format!(
-                      "[Push Bind] {}:{}: {} should be a moudule!",
-                      file!(),
-                      line!(),
-                      stringify!(#id)).as_str());
-                let mut binds = std::collections::HashMap::new();
-                #(#binds);*;
-                sys.create_trigger_bound(#id, binds);
-              }}
-            }
-            FuncArgs::Plain(_) => {
-              let args = emit_args(args);
-              quote! {{
-                  let mut args = vec![];
-                  #(#args);*;
-                  sys.create_trigger_bundled(#id, args);
-                }
-              }
-            }
-          }
+          let args = emit_args(func, args);
+          quote! {{
+            #args;
+            sys.create_trigger_bound(bind);
+          }}
         }
+      }
+      Instruction::Bind((id, call)) => {
+        let func = &call.func;
+        let args = &call.args;
+        let args = emit_args(func, args);
+        quote!(
+          let #id = {
+            #args;
+            bind
+          };
+        )
       }
       Instruction::SpinCall((lock, call)) => {
         let func = &call.func;
-        let binds = emit_args(&call.args);
+        let args = emit_args(func, &call.args);
         let emitted_lock = emit_array_access(lock)?;
         quote! {{
-          let callee = #func
-            .as_ref::<eir::frontend::Module>(sys)
-            .expect(format!("[Push Bind] {} is not a module", stringify!(#func)).as_str());
-          let mut binds = std::collections::HashMap::new();
-          #(#binds);*;
+          #args
           let lock = #emitted_lock;
-          sys.create_spin_trigger_bound(lock, #func, binds);
+          sys.create_spin_trigger_bound(lock, bind);
         }}
         .into()
       }

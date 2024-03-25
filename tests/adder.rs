@@ -1,7 +1,7 @@
 use eda4eda::module_builder;
 
 #[test]
-fn foo() {
+fn adder() {
   module_builder!(adder[a:int<32>, b:int<32>][] {
     a  = a.pop();
     b  = b.pop();
