@@ -78,6 +78,11 @@ impl Visitor<String> for NodeRefDumper {
           dtype_to_rust_type(&int_imm.dtype())
         ))
       }
+      NodeKind::StrImm => {
+        let str_imm = node.as_ref::<StrImm>(sys).unwrap();
+        let value = str_imm.get_value();
+        quote::quote!(#value).to_string().into()
+      }
       NodeKind::Module => {
         let module_name = namify(node.as_ref::<Module>(sys).unwrap().get_name());
         format!("Box::new(EventKind::Module_{})", module_name).into()
@@ -257,6 +262,14 @@ impl Visitor<String> for ElaborateModule<'_> {
           }
         }
         Opcode::CallbackTrigger => "// TODO: opcode: CallbackTrigger...".to_string(),
+        Opcode::Log => {
+          let mut res = String::from("println!(");
+          for elem in expr.operand_iter() {
+            res.push_str(format!("{}, ", dump_ref!(self.sys, elem)).as_str());
+          }
+          res.push(')');
+          res
+        }
         _ => {
           if !(expr.get_opcode().is_unary() || expr.get_opcode().is_binary()) {
             panic!("Unknown opcode: {:?}", expr.get_opcode());
