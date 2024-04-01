@@ -1,6 +1,6 @@
 // TODO(@were): Remove all the predications and move to blocks.
 
-use std::{collections::HashMap, fmt::Display, hash::Hash, ops::Add};
+use std::{collections::HashMap, fmt::Display, hash::Hash};
 
 use crate::{
   frontend::*,
@@ -430,6 +430,7 @@ impl SysBuilder {
   create_arith_op_impl!(binary, create_ige, Opcode::IGE);
   create_arith_op_impl!(binary, create_ilt, Opcode::ILT);
   create_arith_op_impl!(binary, create_ile, Opcode::ILE);
+  create_arith_op_impl!(binary, create_eq, Opcode::EQ);
 
   create_arith_op_impl!(unary, create_neg, Opcode::Neg);
   create_arith_op_impl!(unary, create_flip, Opcode::Flip);
@@ -613,14 +614,14 @@ impl SysBuilder {
       }
       Opcode::Mul => match (&aty, &bty) {
         (DataType::Int(a), DataType::Int(b)) => DataType::Int(a + b),
-        (DataType::UInt(a), DataType::UInt(b)) => DataType::UInt(a.add(b)),
+        (DataType::UInt(a), DataType::UInt(b)) => DataType::UInt(a + b),
         _ => panic!(
           "Cannot combine types {} and {}",
           aty.to_string(),
           bty.to_string()
         ),
       },
-      Opcode::IGT | Opcode::IGE | Opcode::ILT | Opcode::ILE => DataType::uint(1),
+      Opcode::EQ | Opcode::IGT | Opcode::IGE | Opcode::ILT | Opcode::ILE => DataType::uint(1),
       _ => panic!("Unsupported opcode {:?}", op),
     }
   }
@@ -651,12 +652,42 @@ impl SysBuilder {
     res
   }
 
+  /// Create a slice operation.
+  ///
+  /// TODO(@were): Should we allow `start` and `end` to be variables?
+  /// TODO(@were): Should we use [start, end) or [start, end]? For now, [start, end] used.
+  pub fn create_slice(
+    &mut self,
+    ty: Option<DataType>,
+    src: BaseNode,
+    start: BaseNode,
+    end: BaseNode,
+  ) -> BaseNode {
+    let ty = if let Some(ty) = ty {
+      ty
+    } else if let Ok(start) = start.as_ref::<IntImm>(self) {
+      if let Ok(end) = end.as_ref::<IntImm>(self) {
+        assert!(start.get_value() <= end.get_value());
+        let bits = end.get_value() - start.get_value() + 1;
+        DataType::int(bits as usize)
+      } else {
+        src.get_dtype(self).unwrap()
+      }
+    } else {
+      src.get_dtype(self).unwrap()
+    };
+    let res = self.create_expr(ty, Opcode::Slice, vec![src, start, end]);
+    res
+  }
+
   /// The helper function to generate a unique identifier.
   ///
   /// # Arguments
   /// * `id` - The original identifier.
+  ///
   /// # Returns
   /// The unique identifier.
+  ///
   // TODO(@were): Overengineer a dedicated module for this later.
   pub(crate) fn identifier(&mut self, id: &str) -> String {
     // If the identifier is already in the symbol table, we append a number to it.

@@ -28,6 +28,8 @@ pub enum Opcode {
   FIFOPop,
   FIFOPeek,
   Trigger,
+  // Other synthesizable operations
+  Slice,
   // Level-2 syntax sugar, will be re-written in synthesizable operations
   SpinTrigger,
   // Non-synthesizable operations
@@ -44,6 +46,7 @@ impl Opcode {
       | Opcode::ILT
       | Opcode::IGE
       | Opcode::ILE
+      | Opcode::EQ
       | Opcode::BitwiseAnd
       | Opcode::BitwiseOr
       | Opcode::BitwiseXor => true,
@@ -82,6 +85,7 @@ impl ToString for Opcode {
       Opcode::FIFOPop => "pop".into(),
       Opcode::FIFOPeek => "peek".into(),
       Opcode::Log => "log".into(),
+      Opcode::Slice => "slice".into(),
     }
   }
 }
@@ -170,5 +174,10 @@ impl ExprMut<'_> {
     let expr = self.get().upcast();
     let mut block_mut = self.sys.get_mut::<Block>(&parent).unwrap();
     block_mut.erase(&expr);
+  }
+
+  pub fn set_operand(&mut self, i: usize, operand: BaseNode) {
+    // TODO(@were): maintain the redundancy.
+    self.get_mut().operands[i] = operand;
   }
 }

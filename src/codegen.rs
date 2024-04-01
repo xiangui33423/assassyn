@@ -68,7 +68,7 @@ pub(crate) fn emit_expr_body(expr: &syn::Expr) -> syn::Result<proc_macro2::Token
     syn::Expr::MethodCall(method) => {
       let receiver = method.receiver.clone();
       match method.method.to_string().as_str() {
-        "add" | "mul" | "sub" | "bitwise_and" | "bitwise_or" | "ilt" => {
+        "add" | "mul" | "sub" | "bitwise_and" | "bitwise_or" | "ilt" | "eq" => {
           let method_id = format!("create_{}", method.method.to_string());
           let method_id = syn::Ident::new(&method_id, method.method.span());
           let mut operands = method.args.iter();
@@ -87,6 +87,34 @@ pub(crate) fn emit_expr_body(expr: &syn::Expr) -> syn::Result<proc_macro2::Token
               let lhs = #a.clone();
               let rhs = #b.clone();
               let res = sys.#method_id(None, lhs, rhs);
+              res
+            }}
+            .into(),
+          )
+        }
+        "slice" => {
+          let method_id = format!("create_{}", method.method.to_string());
+          let method_id = syn::Ident::new(&method_id, method.method.span());
+          let mut operands = method.args.iter();
+          let a = &method.receiver;
+          let start = operands.next().unwrap();
+          let start = syn::parse::<EmitIDOrConst>(start.into_token_stream().into())?.0;
+          let start: proc_macro2::TokenStream = start.into();
+          let end = operands.next().unwrap();
+          let end = syn::parse::<EmitIDOrConst>(end.into_token_stream().into())?.0;
+          let end: proc_macro2::TokenStream = end.into();
+          if !operands.next().is_none() {
+            return Err(syn::Error::new(
+              method.span(),
+              "[CG.Slice] Like \"a.slice(start, end)\" should have only 2 operands in the argument list",
+            ));
+          }
+          Ok(
+            quote! {{
+              let src = #a.clone();
+              let start = #start;
+              let end = #end;
+              let res = sys.#method_id(None, src, start, end);
               res
             }}
             .into(),
