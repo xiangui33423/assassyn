@@ -118,6 +118,10 @@ impl<'a> ModuleMut<'a> {
     let operations = self.get_mut().external_interfaces.get_mut(&array).unwrap();
     operations.insert(opcode);
   }
+
+  pub fn set_name(&mut self, name: String) {
+    self.get_mut().name = name.to_string();
+  }
 }
 
 impl Typed for ModuleRef<'_> {

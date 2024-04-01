@@ -1,6 +1,6 @@
 use eda4eda::module_builder;
 use eir::{
-  frontend::{BaseNode, SysBuilder},
+  frontend::{BaseNode, Module, SysBuilder},
   test_utils,
 };
 
@@ -96,7 +96,7 @@ fn systolic_array() {
     }
     when lv {
       data = data.pop();
-      log("controller pushes {}", data);
+      log("controller move on {}", data);
       async pusher(data);
       next_lock[0] = lv;
     }
@@ -107,17 +107,28 @@ fn systolic_array() {
       let peeast = pe_array[i][j + 1].pe;
       let fsouth = pe_array[i + 1][j].bound;
       let (pe, feast, acc) = pe_builder(&mut sys, peeast, fsouth);
+      pe.as_mut::<Module>(&mut sys)
+        .unwrap()
+        .set_name(format!("pe_{}_{}", i, j));
       pe_array[i][j].pe = pe;
       pe_array[i][j + 1].bound = feast;
       pe_array[i][j].accumulator = acc;
     }
     let (pusher_pe, bound) = data_pusher_builder(&mut sys, pe_array[i][1].pe);
+    pusher_pe
+      .as_mut::<Module>(&mut sys)
+      .unwrap()
+      .set_name(format!("row_pusher_{}", i));
     pe_array[i][0].pe = pusher_pe;
     pe_array[i][1].bound = bound;
   }
 
   for i in 1..=4 {
     let (pusher_pe, bound) = data_pusher_builder(&mut sys, pe_array[1][i].pe);
+    pusher_pe
+      .as_mut::<Module>(&mut sys)
+      .unwrap()
+      .set_name(format!("col_pusher_{}", i));
     pe_array[0][i].pe = pusher_pe;
     pe_array[1][i].bound = bound;
   }
@@ -131,11 +142,19 @@ fn systolic_array() {
   for i in (1..=4).rev() {
     let (controller, lock) =
       entry_controller_builder(&mut sys, pe_array[i][0].pe, row_ctrls[i + 1].lock_reg);
+    controller
+      .as_mut::<Module>(&mut sys)
+      .unwrap()
+      .set_name(format!("row_controller_{}", i));
     row_ctrls[i].controller = controller;
     row_ctrls[i].lock_reg = lock;
 
     let (controller, lock) =
       entry_controller_builder(&mut sys, pe_array[0][i].pe, col_ctrls[i + 1].lock_reg);
+    controller
+      .as_mut::<Module>(&mut sys)
+      .unwrap()
+      .set_name(format!("col_controller_{}", i));
     col_ctrls[i].controller = controller;
     col_ctrls[i].lock_reg = lock;
   }
@@ -199,8 +218,8 @@ fn systolic_array() {
   let src_name = test_utils::temp_dir(&"systolic.rs".to_string());
   let config = eir::sim::Config {
     fname: src_name,
-    sim_threshold: 200,
-    idle_threshold: 200,
+    sim_threshold: 100,
+    idle_threshold: 100,
   };
 
   eir::sim::elaborate(&sys, &config).unwrap();

@@ -11,11 +11,16 @@ use super::Config;
 struct ElaborateModule<'a> {
   sys: &'a SysBuilder,
   indent: usize,
+  module_name: String,
 }
 
 impl<'a> ElaborateModule<'a> {
   fn new(sys: &'a SysBuilder) -> Self {
-    Self { sys, indent: 0 }
+    Self {
+      sys,
+      indent: 0,
+      module_name: String::new(),
+    }
   }
 }
 
@@ -115,6 +120,7 @@ impl<'ops> Visitor<String> for InterfArgFeeder<'ops> {
 
 impl Visitor<String> for ElaborateModule<'_> {
   fn visit_module(&mut self, module: &ModuleRef<'_>) -> Option<String> {
+    self.module_name = module.get_name().to_string();
     let mut res = String::new();
     res.push_str(format!("// Elaborating module {}\n", namify(module.get_name())).as_str());
     res.push_str(format!("fn {}(\n", namify(module.get_name())).as_str());
@@ -256,7 +262,13 @@ impl Visitor<String> for ElaborateModule<'_> {
         }
         Opcode::Log => {
           let mut res = String::new();
-          res.push_str("print!(\"@line:{:<5} {}:   \", line!(), cyclize(stamp));");
+          res.push_str(
+            format!(
+              "print!(\"@line:{{:<5}} [{}] {{}}:   \", line!(), cyclize(stamp));",
+              self.module_name
+            )
+            .as_str(),
+          );
           res.push_str("println!(");
           for elem in expr.operand_iter() {
             res.push_str(format!("{}, ", dump_ref!(self.sys, elem)).as_str());
