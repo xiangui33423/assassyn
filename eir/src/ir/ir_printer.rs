@@ -4,14 +4,13 @@ use crate::frontend::*;
 
 use super::{block::Block, visitor::Visitor};
 
-pub struct IRPrinter<'a> {
+pub struct IRPrinter {
   indent: usize,
-  sys: &'a SysBuilder,
 }
 
-impl IRPrinter<'_> {
-  pub fn new(sys: &SysBuilder) -> IRPrinter {
-    IRPrinter { indent: 0, sys }
+impl IRPrinter {
+  pub fn new() -> IRPrinter {
+    IRPrinter { indent: 0 }
   }
   pub fn inc_indent(&mut self) {
     self.indent += 2;
@@ -58,7 +57,7 @@ impl Visitor<String> for ExtInterDumper<'_> {
   }
 }
 
-impl Visitor<String> for IRPrinter<'_> {
+impl Visitor<String> for IRPrinter {
   fn visit_input(&mut self, input: &FIFORef<'_>) -> Option<String> {
     format!(
       "{}: fifo<{}>, ",
@@ -107,18 +106,18 @@ impl Visitor<String> for IRPrinter<'_> {
       res.push_str(format!("{}while true {{\n", " ".repeat(self.indent)).as_str());
       self.indent += 2;
     }
-    let InsertPoint(cur_mod, _, at) = self.sys.get_insert_point();
+    let InsertPoint(cur_mod, _, at) = module.sys.get_insert_point();
     for (i, elem) in module.get_body().iter().enumerate() {
       if cur_mod == module.upcast() && at.unwrap_or_else(|| module.get_num_exprs()) == i {
         res.push_str(format!("{}-----{{Insert Here}}-----\n", " ".repeat(self.indent)).as_str());
       }
       match elem.get_kind() {
         NodeKind::Expr => {
-          let expr = elem.as_ref::<Expr>(self.sys).unwrap();
+          let expr = elem.as_ref::<Expr>(module.sys).unwrap();
           res.push_str(format!("{}\n", self.visit_expr(&expr).unwrap()).as_str());
         }
         NodeKind::Block => {
-          let block = elem.as_ref::<Block>(self.sys).unwrap();
+          let block = elem.as_ref::<Block>(module.sys).unwrap();
           res.push_str(format!("{}\n", self.visit_block(&block).unwrap()).as_str());
         }
         _ => {
@@ -150,16 +149,16 @@ impl Visitor<String> for IRPrinter<'_> {
       format!(
         "_{} = {} {} {}",
         expr.get_key(),
-        expr.get_operand(0).unwrap().to_string(self.sys),
+        expr.get_operand(0).unwrap().to_string(expr.sys),
         mnem,
-        expr.get_operand(1).unwrap().to_string(self.sys)
+        expr.get_operand(1).unwrap().to_string(expr.sys)
       )
     } else if expr.get_opcode().is_unary() {
       format!(
         "_{} = {} {}",
         expr.get_key(),
         mnem,
-        expr.get_operand(0).unwrap().to_string(self.sys)
+        expr.get_operand(0).unwrap().to_string(expr.sys)
       )
     } else {
       match expr.get_opcode() {
@@ -167,21 +166,21 @@ impl Visitor<String> for IRPrinter<'_> {
           format!(
             "_{} = {}",
             expr.get_key(),
-            expr.get_operand(0).unwrap().to_string(self.sys),
+            expr.get_operand(0).unwrap().to_string(expr.sys),
           )
         }
         Opcode::Store => {
           format!(
             "{} = {} // handle: _{}",
-            expr.get_operand(0).unwrap().to_string(self.sys),
-            expr.get_operand(1).unwrap().to_string(self.sys),
+            expr.get_operand(0).unwrap().to_string(expr.sys),
+            expr.get_operand(1).unwrap().to_string(expr.sys),
             expr.get_key()
           )
         }
         Opcode::Trigger => {
           let mut res = format!(
             "async call {}, timing [",
-            expr.get_operand(0).unwrap().to_string(self.sys)
+            expr.get_operand(0).unwrap().to_string(expr.sys)
           );
           for op in expr.operand_iter().skip(1) {
             res.push('_');
@@ -199,7 +198,7 @@ impl Visitor<String> for IRPrinter<'_> {
             format!(
               "async {{\n{}while !{} {{ }} // DO NOT move on until this is true\n",
               " ".repeat(self.indent),
-              expr.get_operand(0).unwrap().to_string(self.sys),
+              expr.get_operand(0).unwrap().to_string(expr.sys),
             )
             .as_str(),
           );
@@ -207,12 +206,12 @@ impl Visitor<String> for IRPrinter<'_> {
             format!(
               "{}call {}(",
               " ".repeat(self.indent),
-              expr.get_operand(1).unwrap().to_string(self.sys)
+              expr.get_operand(1).unwrap().to_string(expr.sys)
             )
             .as_str(),
           );
           for op in expr.operand_iter().skip(2) {
-            res.push_str(op.to_string(self.sys).as_str());
+            res.push_str(op.to_string(expr.sys).as_str());
             res.push_str(", ");
           }
           res.push_str(")\n");
@@ -225,11 +224,11 @@ impl Visitor<String> for IRPrinter<'_> {
           let fifo = expr
             .get_operand(0)
             .unwrap()
-            .as_ref::<FIFO>(self.sys)
+            .as_ref::<FIFO>(expr.sys)
             .unwrap();
           let module_name = {
             let parent = fifo.get_parent();
-            let module = parent.as_ref::<Module>(self.sys).unwrap();
+            let module = parent.as_ref::<Module>(expr.sys).unwrap();
             module.get_name().to_string()
           };
           let fifo_name = fifo.get_name();
@@ -240,26 +239,26 @@ impl Visitor<String> for IRPrinter<'_> {
           let fifo = expr
             .get_operand(0)
             .unwrap()
-            .as_ref::<FIFO>(self.sys)
+            .as_ref::<FIFO>(expr.sys)
             .unwrap();
           let module_name = {
             let parent = fifo.get_parent();
-            let module = parent.as_ref::<Module>(self.sys).unwrap();
+            let module = parent.as_ref::<Module>(expr.sys).unwrap();
             module.get_name().to_string()
           };
           let fifo_name = fifo.get_name();
           format!("_{} = {}.{}.peek()", expr.get_key(), module_name, fifo_name)
         }
         Opcode::FIFOPush => {
-          let module_name = expr.get_operand(0).unwrap().to_string(self.sys);
+          let module_name = expr.get_operand(0).unwrap().to_string(expr.sys);
           let fifo_idx = expr
             .get_operand(1)
             .unwrap()
-            .as_ref::<IntImm>(self.sys)
+            .as_ref::<IntImm>(expr.sys)
             .unwrap();
           let idx = fifo_idx.get_value();
           let module = expr.get_operand(0).unwrap();
-          let fifo_name = if let Ok(module) = module.as_ref::<Module>(self.sys) {
+          let fifo_name = if let Ok(module) = module.as_ref::<Module>(expr.sys) {
             let fifo = module
               .get_input(idx as usize)
               .expect(
@@ -271,14 +270,14 @@ impl Visitor<String> for IRPrinter<'_> {
                 )
                 .as_str(),
               )
-              .as_ref::<FIFO>(self.sys)
+              .as_ref::<FIFO>(expr.sys)
               .unwrap();
             fifo.get_name().clone()
           } else {
             "".to_string()
           };
           let to_push = format!("{}.{}", module_name, idx);
-          let value = expr.get_operand(2).unwrap().to_string(self.sys);
+          let value = expr.get_operand(2).unwrap().to_string(expr.sys);
           format!(
             "{}.push({}) // handle: _{}, fifo: {}",
             to_push,
@@ -290,7 +289,7 @@ impl Visitor<String> for IRPrinter<'_> {
         Opcode::Log => {
           let mut res = format!("log(");
           for op in expr.operand_iter() {
-            res.push_str(op.to_string(self.sys).as_str());
+            res.push_str(op.to_string(expr.sys).as_str());
             res.push_str(", ");
           }
           res.push(')');
@@ -300,9 +299,9 @@ impl Visitor<String> for IRPrinter<'_> {
           let res = format!(
             "_{} = {}[{}:{}]",
             expr.get_key(),
-            expr.get_operand(0).unwrap().to_string(self.sys),
-            expr.get_operand(1).unwrap().to_string(self.sys),
-            expr.get_operand(2).unwrap().to_string(self.sys),
+            expr.get_operand(0).unwrap().to_string(expr.sys),
+            expr.get_operand(1).unwrap().to_string(expr.sys),
+            expr.get_operand(2).unwrap().to_string(expr.sys),
           );
           res
         }
@@ -313,6 +312,15 @@ impl Visitor<String> for IRPrinter<'_> {
     };
     format!("{}{}", " ".repeat(self.indent), res).into()
   }
+  fn visit_bind(&mut self, bind: &BindRef<'_>) -> Option<String> {
+    let bound = bind
+      .get_bound()
+      .iter()
+      .map(|(k, v)| format!("{}: {}", k, v.to_string(bind.sys)))
+      .collect::<Vec<String>>()
+      .join(", ");
+    format!("{} {{ {} }}", bind.get_callee().to_string(bind.sys), bound).into()
+  }
   fn visit_block(&mut self, block: &BlockRef<'_>) -> Option<String> {
     let mut res = String::new();
     if let Some(cond) = block.get_pred() {
@@ -320,7 +328,7 @@ impl Visitor<String> for IRPrinter<'_> {
         format!(
           "{}if {} {{\n",
           " ".repeat(self.indent),
-          cond.to_string(self.sys)
+          cond.to_string(block.sys)
         )
         .as_str(),
       );
@@ -331,11 +339,11 @@ impl Visitor<String> for IRPrinter<'_> {
     for elem in block.iter() {
       match elem.get_kind() {
         NodeKind::Expr => {
-          let expr = elem.as_ref::<Expr>(self.sys).unwrap();
+          let expr = elem.as_ref::<Expr>(block.sys).unwrap();
           res.push_str(format!("{}\n", self.visit_expr(&expr).unwrap()).as_str());
         }
         NodeKind::Block => {
-          let block = elem.as_ref::<Block>(self.sys).unwrap();
+          let block = elem.as_ref::<Block>(block.sys).unwrap();
           res.push_str(format!("{}\n", self.visit_block(&block).unwrap()).as_str());
         }
         _ => {

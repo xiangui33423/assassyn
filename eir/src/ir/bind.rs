@@ -63,7 +63,11 @@ impl BindRef<'_> {
   }
 
   pub fn to_args(&self) -> Vec<BaseNode> {
-    assert!(self.full());
+    assert!(
+      self.full(),
+      "Not all arguments are bound, callee: {:?}",
+      self.module
+    );
     match self.get_kind() {
       BindKind::KVBind => {
         let module = self.module.as_ref::<Module>(self.sys).unwrap();

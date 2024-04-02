@@ -248,131 +248,129 @@ pub(crate) fn emit_args(
 }
 
 pub(crate) fn emit_parse_instruction(inst: &Instruction) -> syn::Result<TokenStream> {
-  Ok(
-    match inst {
-      Instruction::Assign((left, right)) => {
-        let right: proc_macro2::TokenStream = emit_expr_body(right)?.into();
-        quote! {
-          let #left = #right;
-        }
+  let res: proc_macro2::TokenStream = match inst {
+    Instruction::Assign((left, right)) => {
+      let right: proc_macro2::TokenStream = emit_expr_body(right)?.into();
+      quote! {
+        let #left = #right;
       }
-      Instruction::ArrayAssign((aa, right)) => {
-        let right: proc_macro2::TokenStream = emit_expr_body(right)?.into();
-        let array_ptr = emit_array_access(aa)?;
-        quote! {{
+    }
+    Instruction::ArrayAssign((aa, right)) => {
+      let right: proc_macro2::TokenStream = emit_expr_body(right)?.into();
+      let array_ptr = emit_array_access(aa)?;
+      quote! {{
+        let ptr = #array_ptr;
+        let value = #right;
+        sys.create_array_write(ptr, value);
+      }}
+    }
+    Instruction::ArrayRead((id, aa)) => {
+      let array_ptr = emit_array_access(aa)?;
+      quote! {
+        let #id = {
           let ptr = #array_ptr;
-          let value = #right;
-          sys.create_array_write(ptr, value);
-        }}
+          sys.create_array_read(ptr)
+        };
       }
-      Instruction::ArrayRead((id, aa)) => {
-        let array_ptr = emit_array_access(aa)?;
-        quote! {
-          let #id = {
-            let ptr = #array_ptr;
-            sys.create_array_read(ptr)
-          };
-        }
-      }
-      Instruction::AsyncCall(call) => {
-        let func = &call.func;
-        let args = &call.args;
-        if func.to_string() == "self" {
-          quote! {{
-            let module = sys
-              .get_current_module()
-              .expect("[Push Bind] No current module to self.trigger")
-              .upcast();
-            sys.create_self_trigger();
-          }}
-        } else {
-          let args = emit_args(func, args, false);
-          quote! {{
-            #args;
-            sys.create_trigger_bound(bind);
-          }}
-        }
-      }
-      Instruction::Bind((id, call, eager)) => {
-        let func = &call.func;
-        let args = &call.args;
-        let args = emit_args(func, args, *eager);
-        quote!(
-          let #id = {
-            #args;
-            bind
-          };
-        )
-      }
-      Instruction::SpinCall((lock, call)) => {
-        let func = &call.func;
-        let args = emit_args(func, &call.args, false);
-        let emitted_lock = emit_array_access(lock)?;
+    }
+    Instruction::AsyncCall(call) => {
+      let func = &call.func;
+      let args = &call.args;
+      if func.to_string() == "self" {
         quote! {{
-          #args
-          let lock = #emitted_lock;
-          sys.create_spin_trigger_bound(lock, bind);
-        }}
-        .into()
-      }
-      Instruction::ArrayAlloc((id, ty, size)) => {
-        let ty = emit_type(ty)?;
-        let ty: proc_macro2::TokenStream = ty.into();
-        quote! {
-          let #id = sys.create_array(#ty, stringify!(#id), #size);
-        }
-      }
-      Instruction::When((cond, body)) => {
-        let body = body
-          .stmts
-          .iter()
-          .map(|x| emit_parse_instruction(x))
-          .collect::<Vec<_>>();
-        let mut unwraped_body: Vec<proc_macro2::TokenStream> = vec![];
-        for elem in body.into_iter() {
-          match elem {
-            Ok(x) => unwraped_body.push(x.into()),
-            Err(e) => return Err(e.clone()),
-          }
-        }
-        quote! {{
-          let cond = #cond.clone();
-          let block = sys.create_block(Some(cond));
-          sys.set_current_block(block.clone());
-          #(#unwraped_body)*;
-          let cur_module = sys
+          let module = sys
             .get_current_module()
-            .expect("[When] No current module")
+            .expect("[Push Bind] No current module to self.trigger")
             .upcast();
-          let ip = sys.get_current_ip();
-          let ip = ip.next(sys).expect("[When] No next ip");
-          sys.set_current_ip(ip);
+          sys.create_self_trigger();
         }}
-      }
-      Instruction::Log(args) => {
-        let args = args
-          .iter()
-          .map(|x| emit_expr_body(x))
-          .collect::<Result<Vec<_>, _>>()?;
-        let reassign = args
-          .iter()
-          .enumerate()
-          .map(|(i, x)| {
-            let id = syn::Ident::new(&format!("_{}", i), Span::call_site());
-            quote! { let #id = #x; }
-          })
-          .collect::<Vec<_>>();
-        let ids = (0..args.len())
-          .map(|i| syn::Ident::new(&format!("_{}", i), Span::call_site()))
-          .collect::<Vec<_>>();
-        let fmt = ids[0].clone();
-        let rest = ids[1..].iter().map(|x| x.clone()).collect::<Vec<_>>();
+      } else {
+        let args = emit_args(func, args, false);
         quote! {{
-          #(#reassign)*
-          sys.create_log(#fmt, vec![#(#rest),*]);
+          #args;
+          sys.create_trigger_bound(bind);
         }}
       }
     }
-    .into(),
-  )
+    Instruction::Bind((id, call, eager)) => {
+      let func = &call.func;
+      let args = &call.args;
+      let args = emit_args(func, args, *eager);
+      quote!(
+        let #id = {
+          #args;
+          bind
+        };
+      )
+    }
+    Instruction::SpinCall((lock, call)) => {
+      let func = &call.func;
+      let args = emit_args(func, &call.args, false);
+      let emitted_lock = emit_array_access(lock)?;
+      quote! {{
+        #args
+        let lock = #emitted_lock;
+        sys.create_spin_trigger_bound(lock, bind);
+      }}
+      .into()
+    }
+    Instruction::ArrayAlloc((id, ty, size)) => {
+      let ty = emit_type(ty)?;
+      let ty: proc_macro2::TokenStream = ty.into();
+      quote! {
+        let #id = sys.create_array(#ty, stringify!(#id), #size);
+      }
+    }
+    Instruction::When((cond, body)) => {
+      let body = body
+        .stmts
+        .iter()
+        .map(|x| emit_parse_instruction(x))
+        .collect::<Vec<_>>();
+      let mut unwraped_body: Vec<proc_macro2::TokenStream> = vec![];
+      for elem in body.into_iter() {
+        match elem {
+          Ok(x) => unwraped_body.push(x.into()),
+          Err(e) => return Err(e.clone()),
+        }
+      }
+      quote! {{
+        let cond = #cond.clone();
+        let block = sys.create_block(Some(cond));
+        sys.set_current_block(block.clone());
+        #(#unwraped_body)*;
+        let cur_module = sys
+          .get_current_module()
+          .expect("[When] No current module")
+          .upcast();
+        let ip = sys.get_current_ip();
+        let ip = ip.next(sys).expect("[When] No next ip");
+        sys.set_current_ip(ip);
+      }}
+    }
+    Instruction::Log(args) => {
+      let args = args
+        .iter()
+        .map(|x| emit_expr_body(x))
+        .collect::<Result<Vec<_>, _>>()?;
+      let reassign = args
+        .iter()
+        .enumerate()
+        .map(|(i, x)| {
+          let id = syn::Ident::new(&format!("_{}", i), Span::call_site());
+          quote! { let #id = #x; }
+        })
+        .collect::<Vec<_>>();
+      let ids = (0..args.len())
+        .map(|i| syn::Ident::new(&format!("_{}", i), Span::call_site()))
+        .collect::<Vec<_>>();
+      let fmt = ids[0].clone();
+      let rest = ids[1..].iter().map(|x| x.clone()).collect::<Vec<_>>();
+      quote! {{
+        #(#reassign)*
+        sys.create_log(#fmt, vec![#(#rest),*]);
+      }}
+    }
+  };
+  Ok(res.into())
 }

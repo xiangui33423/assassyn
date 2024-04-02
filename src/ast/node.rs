@@ -1,3 +1,6 @@
+use proc_macro::Span;
+use syn::spanned::Spanned;
+
 use super::DType;
 use super::Expr;
 
@@ -46,4 +49,22 @@ pub(crate) enum Instruction {
   SpinCall((ArrayAccess, FuncCall)),
   When((syn::Ident, Box<Body>)),
   Log(Vec<syn::Expr>),
+}
+
+impl Instruction {
+  pub(crate) fn span(&self) -> proc_macro2::Span {
+    match self {
+      Instruction::Assign((id, _)) => id.span(),
+      Instruction::ArrayAlloc((id, _, _)) => id.span(),
+      Instruction::ArrayAssign((ArrayAccess { id, .. }, _)) => id.span(),
+      Instruction::ArrayRead((id, ArrayAccess { id: idx, .. })) => {
+        id.span().join(idx.span()).unwrap()
+      }
+      Instruction::AsyncCall(FuncCall { func, .. }) => func.span(),
+      Instruction::Bind((id, _, _)) => id.span(),
+      Instruction::SpinCall((ArrayAccess { id, .. }, _)) => id.span(),
+      Instruction::When((id, _)) => id.span(),
+      Instruction::Log(args) => args[0].span(),
+    }
+  }
 }

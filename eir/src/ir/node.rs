@@ -303,14 +303,14 @@ impl BaseNode {
         let array = self.as_ref::<Array>(sys).unwrap();
         format!("{}", array.get_name())
       }
-      NodeKind::IntImm => IRPrinter::new(sys).dispatch(sys, self, vec![]).unwrap(),
+      NodeKind::IntImm => IRPrinter::new().dispatch(sys, self, vec![]).unwrap(),
       NodeKind::FIFO => self.as_ref::<FIFO>(sys).unwrap().get_name().to_string(),
       NodeKind::Unknown => {
         panic!("Unknown reference")
       }
       NodeKind::Block => {
         let block = self.as_ref::<Block>(sys).unwrap();
-        IRPrinter::new(sys).visit_block(&block).unwrap()
+        IRPrinter::new().visit_block(&block).unwrap()
       }
       NodeKind::ArrayPtr => {
         let handle = self.as_ref::<ArrayPtr>(sys).unwrap();
