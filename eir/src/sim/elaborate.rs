@@ -2,16 +2,21 @@ use std::{
   collections::HashSet,
   fs::{self, File},
   io::Write,
+  process::Command,
 };
 
-use crate::{builder::system::SysBuilder, ir::node::*, ir::visitor::Visitor, ir::*};
+use crate::{
+  builder::system::SysBuilder,
+  ir::{node::*, visitor::Visitor, *},
+};
 
-use super::Config;
+use super::{common_module::CommonModuleCache, Config};
 
 struct ElaborateModule<'a> {
   sys: &'a SysBuilder,
   indent: usize,
   module_name: String,
+  fpc: CommonModuleCache,
 }
 
 impl<'a> ElaborateModule<'a> {
@@ -20,6 +25,7 @@ impl<'a> ElaborateModule<'a> {
       sys,
       indent: 0,
       module_name: String::new(),
+      fpc: CommonModuleCache::new(sys),
     }
   }
 }
@@ -120,11 +126,22 @@ impl<'ops> Visitor<String> for InterfArgFeeder<'ops> {
 
 impl Visitor<String> for ElaborateModule<'_> {
   fn visit_module(&mut self, module: &ModuleRef<'_>) -> Option<String> {
+    // let master = self.fpc.get_master(&module.upcast());
+    // if master != module.upcast() {
+    //   return format!(
+    //     "// Module {} unified to its master {}\n",
+    //     module.get_name(),
+    //     master.as_ref::<Module>(module.sys).unwrap().get_name()
+    //   )
+    //   .into();
+    // }
+
     self.module_name = module.get_name().to_string();
     let mut res = String::new();
     res.push_str(format!("// Elaborating module {}\n", namify(module.get_name())).as_str());
     res.push_str(format!("fn {}(\n", namify(module.get_name())).as_str());
     res.push_str("  stamp: usize,\n");
+    res.push_str("  module_name: &str,\n");
     res.push_str("  q: &mut BinaryHeap<Reverse<Event>>,\n");
     res.push_str("  inputs: &mut (");
     for port in module.port_iter() {
@@ -262,13 +279,8 @@ impl Visitor<String> for ElaborateModule<'_> {
         }
         Opcode::Log => {
           let mut res = String::new();
-          res.push_str(
-            format!(
-              "print!(\"@line:{{:<5}} [{}] {{}}:   \", line!(), cyclize(stamp));",
-              self.module_name
-            )
-            .as_str(),
-          );
+          res
+            .push_str("print!(\"@line:{:<5} [{}] {}:   \", line!(), module_name, cyclize(stamp));");
           res.push_str("println!(");
           for elem in expr.operand_iter() {
             res.push_str(format!("{}, ", dump_ref!(self.sys, elem)).as_str());
@@ -371,7 +383,12 @@ fn namify(name: &str) -> String {
   name.replace(".", "_")
 }
 
-fn dump_runtime(sys: &SysBuilder, fd: &mut File, config: &Config) -> Result<(), std::io::Error> {
+fn dump_runtime(
+  sys: &SysBuilder,
+  fd: &mut File,
+  _: &mut CommonModuleCache,
+  config: &Config,
+) -> Result<(), std::io::Error> {
   // Dump the helper function of cycles.
   fd.write("// Simulation runtime.\n".as_bytes())?;
   {
@@ -514,24 +531,33 @@ fn dump_runtime(sys: &SysBuilder, fd: &mut File, config: &Config) -> Result<(), 
   }
   fd.write("  // Define the event queue\n".as_bytes())?;
   fd.write("  let mut q = BinaryHeap::new();\n".as_bytes())?;
-  // Push the initial events.
-  fd.write(format!("  for i in 0..{} {{\n", config.sim_threshold).as_bytes())?;
-  fd.write(
-    "    q.push(Reverse(Event{stamp: i * 100, kind: EventKind::Module_driver}));\n".as_bytes(),
-  )?;
-  fd.write("  }\n".as_bytes())?;
+  let sim_threshold = config.sim_threshold;
+  if sys.has_driver() {
+    // Push the initial events.
+    fd.write(
+      quote::quote! {
+        for i in 0..#sim_threshold {
+          q.push(Reverse(Event{stamp: i * 100, kind: EventKind::Module_driver}));
+        }
+      }
+      .to_string()
+      .as_bytes(),
+    )?;
+  }
   // TODO(@were): Dump the time stamp of the simulation.
   fd.write("  while let Some(event) = q.pop() {\n".as_bytes())?;
-  fd.write(format!("    if event.0.stamp / 100 > {} {{", config.sim_threshold).as_bytes())?;
   fd.write(
-    format!(
-      "      println!(\"Exceed the simulation threshold {}, exit!\");\n",
-      config.sim_threshold
-    )
+    quote::quote! {
+      if event.0.stamp / 100 > #sim_threshold {
+        print!("Exceed the simulation threshold ");
+        print!("{}", #sim_threshold);
+        println!(", exit!");
+        break;
+      }
+    }
+    .to_string()
     .as_bytes(),
   )?;
-  fd.write("      break;\n".as_bytes())?;
-  fd.write("    }\n".as_bytes())?;
   fd.write("    match event.0.kind {\n".as_bytes())?;
   for module in sys.module_iter() {
     fd.write(
@@ -541,9 +567,26 @@ fn dump_runtime(sys: &SysBuilder, fd: &mut File, config: &Config) -> Result<(), 
       )
       .as_bytes(),
     )?;
+    let callee = namify(module.get_name());
+    // if fpc.get_size(&module.upcast()) != 1{
+    //   let master = fpc.get_master(&module.upcast());
+    //   let master = master.as_ref::<Module>(sys).unwrap();
+    //   fd.write(
+    //     format!(
+    //       "        // Calling {} merged to calling {}\n",
+    //       module.get_name(),
+    //       master.get_name()
+    //     )
+    //     .as_bytes(),
+    //   )?;
+    //   namify(master.get_name())
+    // } else {
+    //   namify(module.get_name())
+    // };
     fd.write(
       format!(
-        "        {}(event.0.stamp, &mut q, &mut {}_fifos",
+        "        {}(event.0.stamp, \"{}\", &mut q, &mut {}_fifos",
+        callee,
         namify(module.get_name()),
         namify(module.get_name()),
       )
@@ -577,14 +620,6 @@ fn dump_runtime(sys: &SysBuilder, fd: &mut File, config: &Config) -> Result<(), 
         )
         .as_bytes(),
       )?;
-      // fd.write(
-      //   format!(
-      //     "        println!(\"@line:{{:<6}} {{}}: Commit FIFO {}.{} push {{:?}}\", line!(), cyclize(event.0.stamp), value);\n",
-      //     namify(module.get_name()),
-      //     namify(port.get_name())
-      //   )
-      //   .as_bytes(),
-      // )?;
       fd.write(
         format!(
           "        {}_fifos.{}.push_back(value);\n",
@@ -604,13 +639,6 @@ fn dump_runtime(sys: &SysBuilder, fd: &mut File, config: &Config) -> Result<(), 
       )
       .as_bytes(),
     )?;
-    // fd.write(
-    //   format!(
-    //     "        println!(\"@line:{{:<6}} {{}}: Commit array {} write {{}}\", line!(), cyclize(event.0.stamp), value);\n",
-    //     namify(array.get_name())
-    //   )
-    //   .as_bytes(),
-    // )?;
     fd.write(format!("        {}[idx] = value;\n", namify(array.get_name())).as_bytes())?;
     fd.write("      }\n".as_bytes())?;
   }
@@ -631,12 +659,14 @@ fn dump_runtime(sys: &SysBuilder, fd: &mut File, config: &Config) -> Result<(), 
   Ok(())
 }
 
-fn dump_module(sys: &SysBuilder, fd: &mut File) -> Result<(), std::io::Error> {
+fn dump_module(sys: &SysBuilder, fd: &mut File) -> Result<CommonModuleCache, std::io::Error> {
   let mut em = ElaborateModule::new(sys);
   for module in em.sys.module_iter() {
-    fd.write(em.visit_module(&module).unwrap().as_bytes())?;
+    if let Some(buffer) = em.visit_module(&module) {
+      fd.write(buffer.as_bytes())?;
+    }
   }
-  Ok(())
+  Ok(em.fpc)
 }
 
 fn dump_header(fd: &mut File) -> Result<usize, std::io::Error> {
@@ -648,10 +678,29 @@ fn dump_header(fd: &mut File) -> Result<usize, std::io::Error> {
   fd.write(src.to_string().as_bytes())
 }
 
-pub fn elaborate(sys: &SysBuilder, config: &Config) -> Result<(), std::io::Error> {
+pub fn elaborate_impl(sys: &SysBuilder, config: &Config) -> Result<(), std::io::Error> {
   println!("Writing simulator code to {}", config.fname);
   let mut fd = fs::File::create(config.fname.clone())?;
   dump_header(&mut fd)?;
-  dump_module(sys, &mut fd)?;
-  dump_runtime(sys, &mut fd, config)
+  let mut fpc = dump_module(sys, &mut fd)?;
+  dump_runtime(sys, &mut fd, &mut fpc, config)?;
+  fd.flush()
+}
+
+pub fn elaborate(sys: &SysBuilder, config: &Config) -> Result<(), std::io::Error> {
+  match elaborate_impl(sys, config) {
+    Ok(_) => {}
+    Err(e) => {
+      eprintln!("Failed to write to file: {}", e);
+      std::process::exit(1);
+    }
+  }
+  let output = Command::new("rustfmt")
+    .arg(config.fname.as_str())
+    .arg("--config")
+    .arg("max_width=100,tab_spaces=2")
+    .output()
+    .expect("Failed to compile");
+  assert!(output.status.success());
+  Ok(())
 }

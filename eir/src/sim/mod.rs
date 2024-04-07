@@ -1,3 +1,4 @@
+mod common_module;
 pub mod config;
 pub mod elaborate;
 

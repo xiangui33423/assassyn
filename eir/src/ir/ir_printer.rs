@@ -96,12 +96,27 @@ impl Visitor<String> for IRPrinter {
         .as_str(),
       );
     }
+    if let Some(param) = module.get_parameterizable() {
+      if !param.is_empty() {
+        res.push_str(" ".repeat(self.indent).as_str());
+        res.push_str("//");
+        for (i, elem) in param.iter().enumerate() {
+          res.push_str(if i == 0 { " " } else { ", " });
+          res.push_str(format!("{}", elem.to_string(module.sys)).as_str());
+        }
+        res.push('\n');
+      }
+    }
     res.push_str(format!("{}module {}(", " ".repeat(self.indent), module.get_name()).as_str());
     module.get();
     for elem in module.port_iter() {
       res.push_str(self.visit_input(&elem).unwrap().as_str());
     }
-    res.push_str(") {\n");
+    res.push_str(format!(") {{ // key: {}", module.get_key()).as_str());
+    if let Some(builder_ptr) = module.get_builder_func_ptr() {
+      res.push_str(format!(", builder-func: 0x{:x}", builder_ptr).as_str());
+    }
+    res.push('\n');
     self.indent += 2;
     if module.get_name().eq("driver") {
       res.push_str(format!("{}while true {{\n", " ".repeat(self.indent)).as_str());

@@ -136,10 +136,18 @@ pub fn module_builder(input: proc_macro::TokenStream) -> proc_macro::TokenStream
       (quote! { eir::ir::node::BaseNode }, quote! { module })
     };
 
+  let parameterizable = parsed_module.ext_interf;
   let res = quote! {
     fn #builder_name (sys: &mut eir::builder::SysBuilder, #ext_interf) -> #ret_tys {
       use eir::ir::node::IsElement;
-      let module = sys.create_module(stringify!(#module_name), vec![#port_decls]);
+      let module = {
+        let res = sys.create_module(stringify!(#module_name), vec![#port_decls]);
+        let mut module_mut = res.as_mut::<eir::ir::Module>(sys).expect("[CG] No module found!");
+        let raw_ptr = #builder_name as *const ();
+        module_mut.set_builder_func_ptr(raw_ptr as usize);
+        module_mut.set_parameterizable(vec![#parameterizable]);
+        res
+      };
       sys.set_current_module(module.clone());
       let ( #port_ids ) = {
         let module = module
@@ -156,9 +164,4 @@ pub fn module_builder(input: proc_macro::TokenStream) -> proc_macro::TokenStream
   // eprintln!("Raw Source Code:\n{}", res);
 
   res.into()
-}
-
-#[proc_macro]
-pub fn testbench_builder(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
-  input
 }

@@ -13,6 +13,8 @@ pub struct Module {
   body: BaseNode,
   /// The set of external interfaces used by the module.
   pub(crate) external_interfaces: HashMap<BaseNode, HashSet<Opcode>>,
+  builder_func_ptr: Option<usize>,
+  parameterizable: Option<Vec<BaseNode>>,
 }
 
 impl Module {
@@ -36,7 +38,19 @@ impl Module {
       inputs,
       body: BaseNode::new(NodeKind::Unknown, 0),
       external_interfaces: HashMap::new(),
+      builder_func_ptr: None,
+      parameterizable: None,
     }
+  }
+
+  /// Get the finger print of the module.
+  pub fn get_builder_func_ptr(&self) -> Option<usize> {
+    self.builder_func_ptr
+  }
+
+  /// Get the nodes that are parameterized by the module builder.
+  pub fn get_parameterizable(&self) -> Option<&Vec<BaseNode>> {
+    self.parameterizable.as_ref()
   }
 }
 
@@ -122,8 +136,20 @@ impl<'a> ModuleMut<'a> {
     operations.insert(opcode);
   }
 
+  /// Set the name of a module. Override the name given by the module builder.
   pub fn set_name(&mut self, name: String) {
     self.get_mut().name = name.to_string();
+  }
+
+  /// Set the metadata, the function pointer to the module builder. As part of the fingerprint of
+  /// comparing the equality of the modules.
+  pub fn set_builder_func_ptr(&mut self, key: usize) {
+    self.get_mut().builder_func_ptr = key.into();
+  }
+
+  /// Set the metadata, these base nodes are parameterized --- plugged in by the module builder.
+  pub fn set_parameterizable(&mut self, param: Vec<BaseNode>) {
+    self.get_mut().parameterizable = Some(param);
   }
 }
 
