@@ -23,6 +23,9 @@ fn adder() {
   let adder = adder_builder(&mut sys);
   driver_builder(&mut sys, adder);
 
+  let verilog_name = test_utils::temp_dir(&"adder.sv".to_string());
+  eir::verilog::elaborate(&sys, verilog_name).unwrap();
+
   let src_name = test_utils::temp_dir(&"adder.rs".to_string());
   let config = eir::sim::Config {
     fname: src_name,
