@@ -256,7 +256,10 @@ impl BaseNode {
         expr.dtype().clone().into()
       }
       NodeKind::Block | NodeKind::ArrayPtr | NodeKind::Bind => None,
-      NodeKind::StrImm => None,
+      NodeKind::StrImm => {
+        let str_imm = self.as_ref::<StrImm>(sys).unwrap();
+        str_imm.dtype().clone().into()
+      }
       NodeKind::Array => None,
       NodeKind::Unknown => {
         panic!("Unknown reference")
