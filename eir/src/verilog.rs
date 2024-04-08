@@ -117,7 +117,9 @@ impl<'a> Visitor<String> for VerilogDumper<'a> {
         array_ref.get_name()
       ).as_str());
     }
-    res.push_str("\n");
+    if module.ext_interf_iter().next().is_some() {
+      res.push_str("\n");
+    }
 
     for elem in module.get_body().iter() {
       match elem.get_kind() {
@@ -175,8 +177,10 @@ impl<'a> Visitor<String> for VerilogDumper<'a> {
         Opcode::Log => {
           let mut format_str = dump_ref!(self.sys, expr.operand_iter().collect::<Vec<&BaseNode>>().first().unwrap());
           for elem in expr.operand_iter().skip(1) {
+            println!("{:?}", elem);
             format_str = format_str.replacen("{}", match elem.get_dtype(self.sys).unwrap() {
               DataType::Int(_) => "%d",
+              DataType::Str => "%s",
               _ => "?",
             }, 1);
           }
@@ -191,6 +195,7 @@ impl<'a> Visitor<String> for VerilogDumper<'a> {
           }
           res.pop(); res.pop();
           res.push_str(");\n");
+          res.push_str("\n");
           Some(res)
         }
 
