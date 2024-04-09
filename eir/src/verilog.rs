@@ -5,13 +5,15 @@ use crate::{builder::system::SysBuilder, ir::node::*, ir::visitor::Visitor, ir::
 struct VerilogDumper<'a> {
   sys: &'a SysBuilder,
   indent: usize,
+  pred: Option<String>,
 }
 
 impl<'a> VerilogDumper<'a> {
   fn new(sys: &'a SysBuilder) -> Self {
     Self {
       sys,
-      indent: 0
+      indent: 0,
+      pred: None,
     }
   }
 }
@@ -127,6 +129,10 @@ impl<'a> Visitor<String> for VerilogDumper<'a> {
           let expr = elem.as_ref::<Expr>(self.sys).unwrap();
           res.push_str(self.visit_expr(&expr).unwrap().as_str());
         }
+        NodeKind::Block => {
+          let block = elem.as_ref::<Block>(self.sys).unwrap();
+          res.push_str(self.visit_block(&block).unwrap().as_str());
+        }
         _ => {
           panic!("Unexpected reference type: {:?}", elem);
         }
@@ -136,6 +142,40 @@ impl<'a> Visitor<String> for VerilogDumper<'a> {
     res.push_str(format!("endmodule // {}\n\n\n", module.get_name()).as_str());
 
     Some(res)
+  }
+
+
+  fn visit_block(&mut self, block: &BlockRef<'_>) -> Option<String> {
+    let mut res = String::new();
+    if let Some(cond) = block.get_pred() {
+      self.pred = 
+        Some(format!(
+          " && {}{}",
+          dump_ref!(self.sys, &cond),
+          if cond.get_dtype(block.sys).unwrap().bits() == 1 {
+            "".into()
+          } else {
+            format!(" != 0")
+          }
+        ));
+    }
+    for elem in block.iter() {
+      match elem.get_kind() {
+        NodeKind::Expr => {
+          let expr = elem.as_ref::<Expr>(self.sys).unwrap();
+          res.push_str(self.visit_expr(&expr).unwrap().as_str());
+        }
+        NodeKind::Block => {
+          let block = elem.as_ref::<Block>(self.sys).unwrap();
+          res.push_str(self.visit_block(&block).unwrap().as_str());
+        }
+        _ => {
+          panic!("Unexpected reference type: {:?}", elem);
+        }
+      }
+    }
+    self.pred = None;
+    res.into()
   }
 
   fn visit_expr(&mut self, expr: &ExprRef<'_>) -> Option<String> {
@@ -165,19 +205,19 @@ impl<'a> Visitor<String> for VerilogDumper<'a> {
             .as_ref::<FIFO>(self.sys)
             .unwrap();
           Some(format!(
-            "logic [{}:0] _{};\nassign _{} = {}_data;\nassign {}_ready = trigger;\n\n",
+            "logic [{}:0] _{};\nassign _{} = {}_data;\nassign {}_ready = trigger{};\n\n",
             fifo.scalar_ty().bits() - 1,
             expr.get_key(),
             expr.get_key(),
             fifo.get_name(),
-            fifo.get_name()
+            fifo.get_name(),
+            self.pred.clone().unwrap_or("".to_string())
           ))
         }
 
         Opcode::Log => {
           let mut format_str = dump_ref!(self.sys, expr.operand_iter().collect::<Vec<&BaseNode>>().first().unwrap());
           for elem in expr.operand_iter().skip(1) {
-            println!("{:?}", elem);
             format_str = format_str.replacen("{}", match elem.get_dtype(self.sys).unwrap() {
               DataType::Int(_) => "%d",
               DataType::Str => "%s",
@@ -186,7 +226,7 @@ impl<'a> Visitor<String> for VerilogDumper<'a> {
           }
           format_str = format_str.replace("\"", "");
           let mut res = String::new();
-          res.push_str("always_ff @(posedge clk iff trigger) ");
+          res.push_str(format!("always_ff @(posedge clk iff trigger{}) ", self.pred.clone().unwrap_or("".to_string())).as_str());
           res.push_str("$display(\"%t\\t");
           res.push_str(format_str.as_str());
           res.push_str("\", $time, ");
@@ -210,7 +250,7 @@ impl<'a> Visitor<String> for VerilogDumper<'a> {
             .unwrap();
           Some(format!(
             "logic [{}:0] _{};\nassign _{} = {}_r;\n\n",
-            expr.dtype().bits(),
+            expr.dtype().bits() - 1,
             expr.get_key(),
             expr.get_key(),
             array_ref.get_name()
@@ -227,8 +267,9 @@ impl<'a> Visitor<String> for VerilogDumper<'a> {
             .as_ref::<Array>(self.sys)
             .unwrap();
           Some(format!(
-            "always_ff @(posedge clk or negedge rst_n) if (!rst_n) {}_r <= '0; else if (trigger) {}_r <= {};\n\n",
+            "always_ff @(posedge clk or negedge rst_n) if (!rst_n) {}_r <= '0; else if (trigger{}) {}_r <= {};\n\n",
             array_ref.get_name(),
+            self.pred.clone().unwrap_or("".to_string()),
             array_ref.get_name(),
             dump_ref!(expr.sys, expr.get_operand(1).unwrap())
           ))
@@ -236,7 +277,6 @@ impl<'a> Visitor<String> for VerilogDumper<'a> {
 
         Opcode::FIFOPush => {
           let value = expr.get_operand(2).unwrap();
-          // println!("{:?}", expr.get_operand(1));
           let fifo_idx = expr
             .get_operand(1)
             .unwrap()
@@ -260,7 +300,7 @@ impl<'a> Visitor<String> for VerilogDumper<'a> {
           res.push_str(format!("fifo #({}) fifo_{}_{}_i (\n", value.get_dtype(self.sys).unwrap().bits(), module.get_name(), fifo.get_name()).as_str());
           res.push_str(format!("  .clk(clk),\n").as_str());
           res.push_str(format!("  .rst_n(rst_n),\n").as_str());
-          res.push_str(format!("  .up_valid(trigger),\n").as_str());
+          res.push_str(format!("  .up_valid(trigger{}),\n", self.pred.clone().unwrap_or("".to_string())).as_str());
           res.push_str(format!("  .up_data({}),\n", value.to_string(self.sys)).as_str());
           res.push_str(format!("  .up_ready(),\n").as_str());
           res.push_str(format!("  .dn_valid(_{}_valid),\n", expr.get_key()).as_str());
@@ -289,7 +329,7 @@ impl<'a> Visitor<String> for VerilogDumper<'a> {
             res.push_str(format!("  .{}_ready(_{}_ready),\n", port.get_name(), op.get_key()).as_str());
             i += 1;
           }
-          res.push_str(format!("  .trigger(trigger)\n").as_str());
+          res.push_str(format!("  .trigger(trigger{})\n", self.pred.clone().unwrap_or("".to_string())).as_str());
           res.push_str(format!(");\n").as_str());
           res.push_str("\n");
           Some(res)
@@ -332,17 +372,15 @@ pub fn elaborate(sys: &SysBuilder, fname: String) -> Result<(), std::io::Error> 
 logic [WIDTH - 1:0] q[$];
 
 always @(posedge clk) begin
-    if (up_valid) q.push_back(up_data);
-
     if (q.size() == 0) begin
-        dn_valid = 1'b0;
-        dn_data = 'x;
+        dn_valid = up_valid;
+        dn_data = up_data;
+        if (up_valid && !dn_ready) q.push_back(up_data);
     end else begin
         dn_valid = 1'b1;
         dn_data = q[0];
+        if (dn_ready) q.pop_front();
     end
-
-    if (dn_ready) q.pop_front();
 end
 
 assign up_ready = 1'b1;
