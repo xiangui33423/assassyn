@@ -148,7 +148,7 @@ impl<'a> Visitor<String> for VerilogDumper<'a> {
   fn visit_block(&mut self, block: &BlockRef<'_>) -> Option<String> {
     let mut res = String::new();
     if let Some(cond) = block.get_pred() {
-      self.pred = 
+      self.pred =
         Some(format!(
           " && {}{}",
           dump_ref!(self.sys, &cond),
@@ -357,30 +357,37 @@ pub fn elaborate(sys: &SysBuilder, fname: String) -> Result<(), std::io::Error> 
   fd.write("module fifo #(
     parameter WIDTH = 8
 ) (
-    input logic clk,
-    input logic rst_n,
+  input logic clk,
+  input logic rst_n,
 
-    input  logic               up_valid,
-    input  logic [WIDTH - 1:0] up_data,
-    output logic               up_ready,
+  input  logic               up_valid,
+  input  logic [WIDTH - 1:0] up_data,
+  output logic               up_ready,
 
-    output logic               dn_valid,
-    output logic [WIDTH - 1:0] dn_data,
-    input  logic               dn_ready
+  output logic               dn_valid,
+  output logic [WIDTH - 1:0] dn_data,
+  input  logic               dn_ready
 );
 
 logic [WIDTH - 1:0] q[$];
 
-always @(posedge clk) begin
+always @(posedge clk or negedge rst_n) begin
+  if (!rst_n) begin
+    dn_valid <= 1'b0;
+    dn_data <= 'x;
+  end else begin
+    if (dn_ready) q.pop_front();
+
+    if (up_valid) q.push_back(up_data);
+
     if (q.size() == 0) begin
-        dn_valid = up_valid;
-        dn_data = up_data;
-        if (up_valid && !dn_ready) q.push_back(up_data);
+      dn_valid <= 1'b0;
+      dn_data <= 'x;
     end else begin
-        dn_valid = 1'b1;
-        dn_data = q[0];
-        if (dn_ready) q.pop_front();
+      dn_valid <= 1'b1;
+      dn_data <= q[0];
     end
+  end
 end
 
 assign up_ready = 1'b1;
@@ -394,25 +401,25 @@ logic clk;
 logic rst_n;
 
 initial begin
-    $fsdbDumpfile(\"wave.fsdb\");
-    $fsdbDumpvars();
+  $fsdbDumpfile(\"wave.fsdb\");
+  $fsdbDumpvars();
 end
 
 initial begin
-    clk = 1'b0;
-    rst_n = 1'b0;
-    #100;
-    rst_n = 1'b1;
-    #10000;
-    $finish();
+  clk = 1'b1;
+  rst_n = 1'b0;
+  #100;
+  rst_n = 1'b1;
+  #10000;
+  $finish();
 end
 
 always #50 clk <= !clk;
 
 driver driver_i (
-    .clk(clk),
-    .rst_n(rst_n),
-    .trigger(1'b1)
+  .clk(clk),
+  .rst_n(rst_n),
+  .trigger(1'b1)
 );
 
 endmodule
