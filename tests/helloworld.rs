@@ -12,7 +12,11 @@ fn helloworld() {
   println!("{}", sys);
 
   let verilog_name = test_utils::temp_dir(&"helloworld.sv".to_string());
-  eir::verilog::elaborate(&sys, verilog_name).unwrap();
+  let verilog_config = eir::verilog::Config {
+    fname: verilog_name,
+    sim_threshold: 1,
+  };
+  eir::verilog::elaborate(&sys, &verilog_config).unwrap();
 
   let src_name = test_utils::temp_dir(&"helloworld.rs".to_string());
   let config = eir::sim::Config {

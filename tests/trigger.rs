@@ -33,6 +33,13 @@ fn trigger() {
 
   println!("{}", sys);
 
+  let verilog_name = test_utils::temp_dir(&"trigger.sv".to_string());
+  let verilog_config = eir::verilog::Config {
+    fname: verilog_name,
+    sim_threshold: 200,
+  };
+  eir::verilog::elaborate(&sys, &verilog_config).unwrap();
+
   let src_name = test_utils::temp_dir(&"trigger.rs".to_string());
   let config = eir::sim::Config {
     fname: src_name,

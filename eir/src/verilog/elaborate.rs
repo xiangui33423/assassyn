@@ -2,6 +2,8 @@ use std::{fs::File, io::Write};
 
 use crate::{builder::system::SysBuilder, ir::node::*, ir::visitor::Visitor, ir::*};
 
+use super::Config;
+
 struct VerilogDumper<'a> {
   sys: &'a SysBuilder,
   indent: usize,
@@ -111,7 +113,7 @@ impl<'a> Visitor<String> for VerilogDumper<'a> {
     self.indent -= 2;
     res.push_str(");\n\n");
 
-    for (array, ops) in module.ext_interf_iter() {
+    for (array, _ops) in module.ext_interf_iter() {
       let array_ref = array.as_ref::<Array>(self.sys).unwrap();
       res.push_str(format!(
         "logic [{}:0] {}_r;\n",
@@ -318,6 +320,13 @@ impl<'a> Visitor<String> for VerilogDumper<'a> {
             .as_ref::<Module>(self.sys)
             .unwrap();
           let mut res = String::new();
+          res.push_str(format!("logic trigger_{};\n", module.get_name()).as_str());
+          res.push_str(format!(
+            "always_ff @(posedge clk or negedge rst_n) if (!rst_n) trigger_{} <= 1'b0; else trigger_{} <= trigger{};\n",
+            module.get_name(),
+            module.get_name(),
+            self.pred.clone().unwrap_or("".to_string())
+          ).as_str());
           res.push_str(format!("{} {}_i (\n", module.get_name(), module.get_name()).as_str());
           res.push_str(format!("  .clk(clk),\n").as_str());
           res.push_str(format!("  .rst_n(rst_n),\n").as_str());
@@ -329,7 +338,7 @@ impl<'a> Visitor<String> for VerilogDumper<'a> {
             res.push_str(format!("  .{}_ready(_{}_ready),\n", port.get_name(), op.get_key()).as_str());
             i += 1;
           }
-          res.push_str(format!("  .trigger(trigger{})\n", self.pred.clone().unwrap_or("".to_string())).as_str());
+          res.push_str(format!("  .trigger(trigger_{})\n", module.get_name()).as_str());
           res.push_str(format!(");\n").as_str());
           res.push_str("\n");
           Some(res)
@@ -343,18 +352,18 @@ impl<'a> Visitor<String> for VerilogDumper<'a> {
   }
 }
 
-pub fn elaborate(sys: &SysBuilder, fname: String) -> Result<(), std::io::Error> {
-  println!("Writing verilog rtl to {}", fname);
+pub fn elaborate(sys: &SysBuilder, config: &Config) -> Result<(), std::io::Error> {
+  println!("Writing verilog rtl to {}", config.fname);
 
   let mut vd = VerilogDumper::new(sys);
 
-  let mut fd = File::create(fname.clone())?;
+  let mut fd = File::create(config.fname.clone())?;
 
   for module in vd.sys.module_iter() {
     fd.write(vd.visit_module(&module).unwrap().as_bytes())?;
   }
 
-  fd.write("module fifo #(
+  fd.write(format!("module fifo #(
     parameter WIDTH = 8
 ) (
   input logic clk,
@@ -410,7 +419,7 @@ initial begin
   rst_n = 1'b0;
   #100;
   rst_n = 1'b1;
-  #10000;
+  #{}00;
   $finish();
 end
 
@@ -423,7 +432,7 @@ driver driver_i (
 );
 
 endmodule
-".as_bytes())?;
+", config.sim_threshold).as_bytes())?;
 
   Ok(())
 }
