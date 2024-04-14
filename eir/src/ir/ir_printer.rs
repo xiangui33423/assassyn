@@ -8,12 +8,16 @@ use self::expr::OperandOf;
 use super::{block::Block, visitor::Visitor};
 
 pub struct IRPrinter {
+  redundancy: bool,
   indent: usize,
 }
 
 impl IRPrinter {
-  pub fn new() -> IRPrinter {
-    IRPrinter { indent: 0 }
+  pub fn new(redundancy: bool) -> IRPrinter {
+    IRPrinter {
+      indent: 0,
+      redundancy,
+    }
   }
   pub fn inc_indent(&mut self) {
     self.indent += 2;
@@ -23,7 +27,11 @@ impl IRPrinter {
   }
 }
 
-struct ExtInterDumper<'a>(&'a HashSet<OperandOf>, usize);
+struct ExtInterDumper<'a> {
+  redundancy: bool,
+  ident: usize,
+  users: &'a HashSet<OperandOf>,
+}
 
 // TODO(@were): Fix this, dump the actual value of the operand_of one a line.
 impl Visitor<String> for ExtInterDumper<'_> {
@@ -35,13 +43,13 @@ impl Visitor<String> for ExtInterDumper<'_> {
       input.get_name(),
       input.scalar_ty().to_string()
     );
-    for op in self.0.iter() {
-      let expr = IRPrinter::new()
+    for op in self.users.iter() {
+      let expr = IRPrinter::new(self.redundancy)
         .visit_expr(&op.user.as_ref::<Expr>(input.sys).unwrap())
         .unwrap();
-      res.push_str(&format!("{}//   {}\n", " ".repeat(self.1), expr));
+      res.push_str(&format!("{}//   {}\n", " ".repeat(self.ident), expr));
     }
-    res.push_str(&format!("{}// }}", " ".repeat(self.1)));
+    res.push_str(&format!("{}// }}", " ".repeat(self.ident)));
     res.into()
   }
 
@@ -52,13 +60,13 @@ impl Visitor<String> for ExtInterDumper<'_> {
       array.get_size(),
       array.scalar_ty().to_string(),
     );
-    for op in self.0.iter() {
-      let expr = IRPrinter::new()
+    for op in self.users.iter() {
+      let expr = IRPrinter::new(self.redundancy)
         .visit_expr(&op.user.as_ref::<Expr>(array.sys).unwrap())
         .unwrap();
-      res.push_str(&format!("{}//   {}\n", " ".repeat(self.1), expr));
+      res.push_str(&format!("{}//   {}\n", " ".repeat(self.ident), expr));
     }
-    res.push_str(&format!("{}// }}", " ".repeat(self.1)));
+    res.push_str(&format!("{}// }}", " ".repeat(self.ident)));
     res.into()
   }
 
@@ -67,10 +75,27 @@ impl Visitor<String> for ExtInterDumper<'_> {
   }
 }
 
+struct FIFODumper;
+
+impl Visitor<String> for FIFODumper {
+  fn visit_input(&mut self, fifo: &FIFORef<'_>) -> Option<String> {
+    if fifo.is_placeholder() {
+      format!("{}.{}", fifo.get_parent().to_string(fifo.sys), fifo.idx())
+    } else {
+      format!(
+        "{}.{}",
+        fifo.get_parent().to_string(fifo.sys),
+        fifo.get_name()
+      )
+    }
+    .into()
+  }
+}
+
 impl Visitor<String> for IRPrinter {
   fn visit_input(&mut self, input: &FIFORef<'_>) -> Option<String> {
     format!(
-      "{}: fifo<{}>, ",
+      "{}: fifo<{}>",
       input.get_name(),
       input.scalar_ty().to_string()
     )
@@ -97,9 +122,13 @@ impl Visitor<String> for IRPrinter {
       res.push_str(&format!(
         "{}// {}\n",
         " ".repeat(self.indent),
-        ExtInterDumper(ops, self.indent)
-          .dispatch(module.sys, elem, vec![])
-          .unwrap()
+        ExtInterDumper {
+          users: ops,
+          ident: self.indent,
+          redundancy: self.redundancy
+        }
+        .dispatch(module.sys, elem, vec![])
+        .unwrap()
       ));
     }
     if let Some(param) = module.get_parameterizable() {
@@ -121,6 +150,7 @@ impl Visitor<String> for IRPrinter {
     module.get();
     for elem in module.port_iter() {
       res.push_str(&self.visit_input(&elem).unwrap());
+      res.push_str(", ");
     }
     res.push_str(&format!(") {{ // key: {}", module.get_key()));
     if let Some(builder_ptr) = module.get_builder_func_ptr() {
@@ -276,37 +306,15 @@ impl Visitor<String> for IRPrinter {
           format!("_{} = {}.{}.peek()", expr.get_key(), module_name, fifo_name)
         }
         Opcode::FIFOPush => {
-          let module_name = expr.get_operand(0).unwrap().to_string(expr.sys);
-          let fifo_idx = expr
-            .get_operand(1)
-            .unwrap()
-            .as_ref::<IntImm>(expr.sys)
+          let fifo_name = FIFODumper
+            .dispatch(expr.sys, expr.get_operand(0).unwrap(), vec![])
             .unwrap();
-          let idx = fifo_idx.get_value();
-          let module = expr.get_operand(0).unwrap();
-          let fifo_name = if let Ok(module) = module.as_ref::<Module>(expr.sys) {
-            let fifo = module
-              .get_input(idx as usize)
-              .expect(&format!(
-                "exceed the number of fifos {} > ({} - 1) of module {}",
-                idx,
-                module.get_num_inputs(),
-                module.get_name(),
-              ))
-              .as_ref::<FIFO>(expr.sys)
-              .unwrap();
-            fifo.get_name().clone()
-          } else {
-            "".to_string()
-          };
-          let to_push = format!("{}.{}", module_name, idx);
-          let value = expr.get_operand(2).unwrap().to_string(expr.sys);
+          let value = expr.get_operand(1).unwrap().to_string(expr.sys);
           format!(
-            "{}.push({}) // handle: _{}, fifo: {}",
-            to_push,
+            "{}.push({}) // handle: _{}",
+            fifo_name,
             value,
             expr.get_key(),
-            fifo_name,
           )
         }
         Opcode::Log => {

@@ -425,7 +425,9 @@ impl SysBuilder {
     let callee = bind.get_callee();
     let mut bundle = bind.to_args();
     bundle.insert(0, callee);
-    self.create_expr(DataType::void(), Opcode::Trigger, bundle)
+    let res = self.create_expr(DataType::void(), Opcode::Trigger, bundle);
+    self.add_user(callee, OperandOf::new(res, 0));
+    res
   }
 
   create_arith_op_impl!(binary, create_add, Opcode::Add);
@@ -554,29 +556,30 @@ impl SysBuilder {
       _ => panic!("Invalid module type"),
     }
 
-    // TODO(@were): Fix indirect call back redundancy.
-    // if value.get_kind() == NodeKind::Module {
-    //   let dst = self.get::<Module>(&value).unwrap();
-    //   let port = dst.get_input(idx).unwrap();
-    //   let src = self.get_current_module().unwrap().upcast();
-    //   let mut src_mut = self.get_mut::<Module>(&src).unwrap();
-    //   src_mut.insert_external_interface(port, Opcode::FIFOPush);
-    // } else if value.get_dtype(self).unwrap().is_module() {
-    //   println!("[Warning] For now, only direct module reference supported.");
-    // }
-
-    // Prepare to insert the external interface.
-    let dst = self.get::<Module>(&module).unwrap();
-    let port = dst.get_input(idx).unwrap();
-    let src = self.get_current_module().unwrap().upcast();
+    let port = match module.get_kind() {
+      NodeKind::Module => module
+        .as_ref::<Module>(self)
+        .unwrap()
+        .get_input(idx)
+        .expect("Invalid port index")
+        .clone(),
+      _ => {
+        let dtype = value.get_dtype(self).unwrap();
+        let fifo = FIFO::placeholder(dtype, module.clone(), idx);
+        self.insert_element(fifo)
+      }
+    };
 
     // Create the expression.
-    let idx = self.get_const_int(DataType::uint(32), idx as u64);
-    let res = self.create_expr(DataType::void(), Opcode::FIFOPush, vec![module, idx, value]);
+    let res = self.create_expr(DataType::void(), Opcode::FIFOPush, vec![port, value]);
 
-    // Maintain the external interface redundancy.
-    let mut src_mut = self.get_mut::<Module>(&src).unwrap();
-    src_mut.insert_external_interface(port, OperandOf::new(res, 0));
+    // Maintain the external interface redundancy when it is determined.
+    if !port.as_ref::<FIFO>(self).unwrap().is_placeholder() {
+      let src = self.get_current_module().unwrap().upcast();
+      let mut src_mut = self.get_mut::<Module>(&src).unwrap();
+      src_mut.insert_external_interface(port, OperandOf::new(res, 0));
+    }
+    self.add_user(port, OperandOf::new(res, 0));
 
     res
   }
@@ -732,7 +735,7 @@ impl SysBuilder {
 
 impl Display for SysBuilder {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    let mut printer = IRPrinter::new();
+    let mut printer = IRPrinter::new(false);
     write!(f, "system {} {{\n", self.name)?;
     for elem in self.array_iter() {
       write!(f, "  {};\n", printer.visit_array(&elem).unwrap())?;

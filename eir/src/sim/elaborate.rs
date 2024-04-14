@@ -5,6 +5,8 @@ use std::{
   process::Command,
 };
 
+use proc_macro2::Span;
+
 use crate::{
   builder::system::SysBuilder,
   ir::{node::*, visitor::Visitor, *},
@@ -180,16 +182,20 @@ impl Visitor<String> for ElaborateModule<'_, '_> {
           let slab_idx = *self.slab_cache.get(&array).unwrap();
           let array = array.as_ref::<Array>(expr.sys).unwrap();
           let idx = dump_ref!(expr.sys, handle.get_idx());
+          let idx = idx.parse::<proc_macro2::TokenStream>().unwrap();
           let (scalar_ty, size) = unwrap_array_ty(&array.dtype());
           let aid = array_ty_to_id(&scalar_ty, size);
-          format!(
-            "reg_write.insert({}); q.push(Reverse(Event{{ stamp: stamp + 50, kind: EventKind::Array{}Write(({}, {} as usize, {})) }}))",
-            slab_idx,
-            aid,
-            slab_idx,
-            idx,
-            dump_ref!(expr.sys, expr.get_operand(1).unwrap()),
-          )
+          let id = syn::Ident::new(&format!("Array{}Write", aid), Span::call_site());
+          let value = dump_ref!(self.sys, expr.get_operand(1).unwrap());
+          let value = value.parse::<proc_macro2::TokenStream>().unwrap();
+          quote::quote! {
+            reg_write.insert(#slab_idx);
+            q.push(Reverse(Event{
+              stamp: stamp + 50,
+              kind: EventKind::#id((#slab_idx, #idx as usize, #value))
+            }))
+          }
+          .to_string()
         }
         Opcode::Trigger => {
           let to_trigger =
@@ -224,37 +230,32 @@ impl Visitor<String> for ElaborateModule<'_, '_> {
           format!("{}.front().unwrap().clone()", fifo_name!(fifo))
         }
         Opcode::FIFOPush => {
-          let value = dump_ref!(self.sys, expr.get_operand(2).unwrap());
-          let module = expr
+          let fifo = expr
             .get_operand(0)
-            .unwrap()
-            .as_ref::<Module>(self.sys)
-            .unwrap();
-          let fifo_idx = expr
-            .get_operand(1)
-            .unwrap()
-            .as_ref::<IntImm>(self.sys)
-            .unwrap()
-            .get_value();
-          let port = module
-            .get_input(fifo_idx as usize)
             .unwrap()
             .as_ref::<FIFO>(self.sys)
             .unwrap();
-          let slab_idx = *self.slab_cache.get(&port.upcast()).unwrap();
-          if expr.get_operand(0).unwrap().get_kind() == NodeKind::Module {
-            format!(
-              "reg_write.insert({}); q.push(Reverse(Event{{ stamp: stamp + 50, kind: EventKind::FIFO{}Push(({}, {})) }}))",
-              slab_idx,
-              dtype_to_rust_type(&port.scalar_ty()),
-              slab_idx,
-              value
-            )
+          let slab_idx = *self.slab_cache.get(&fifo.upcast()).unwrap();
+          let fifo_push = syn::Ident::new(
+            &format!("FIFO{}Push", dtype_to_rust_type(&fifo.scalar_ty())),
+            Span::call_site(),
+          );
+          let value = dump_ref!(self.sys, expr.get_operand(1).unwrap());
+          let value = value.parse::<proc_macro2::TokenStream>().unwrap();
+          if !fifo.is_placeholder() {
+            quote::quote! {
+              reg_write.insert(#slab_idx);
+              q.push(Reverse(Event{
+                stamp: stamp + 50,
+                kind: EventKind::#fifo_push((#slab_idx, #value))
+              }))
+            }
+            .to_string()
           } else {
             let module = dump_ref!(self.sys, expr.get_operand(0).unwrap());
             format!(
               "// q.push(Reverse(Event{{ stamp: stamp + 50, kind: to_push({}.as_ref().clone(), {}, {} as u64) }}))",
-              module, fifo_idx, value
+              module, fifo.idx(), value
             )
           }
         }
@@ -491,7 +492,7 @@ fn dump_runtime(sys: &SysBuilder, config: &Config) -> (String, HashMap<BaseNode,
       },
       size,
       slab_cache.len(),
-      IRPrinter::new().visit_array(&array).unwrap()
+      IRPrinter::new(false).visit_array(&array).unwrap()
     ));
     slab_cache.insert(array.upcast(), slab_cache.len());
   }

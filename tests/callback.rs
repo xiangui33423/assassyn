@@ -1,6 +1,6 @@
 // use eda4eda::module_builder;
-// use eir::{builder::SysBuilder, sim, test_utils};
-
+// use eir::{builder::SysBuilder, sim, test_utils, xform};
+//
 // #[test]
 // fn callback() {
 //   module_builder!(
@@ -44,6 +44,7 @@
 //     sim_threshold: 100,
 //   };
 //
+//   xform::basic(&mut sys);
 //   sim::elaborate(&sys, &config).unwrap();
 //   test_utils::compile(&config.fname, &exec_name);
 //   let output = test_utils::run(&exec_name);

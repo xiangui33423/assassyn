@@ -9,14 +9,22 @@ use self::expr::OperandOf;
 
 /// The data structure for a module.
 pub struct Module {
+  /// The index key of this module in the slab buffer.
   pub(crate) key: usize,
+  /// The name of this module, can be overridden by `set_name`.
   name: String,
+  /// The input ports of this module.
   inputs: Vec<BaseNode>,
+  /// The body of the module.
   body: BaseNode,
   /// The set of external interfaces used by the module.
   pub(crate) external_interfaces: HashMap<BaseNode, HashSet<OperandOf>>,
+  /// The metadata of this module. The pointer to the module builder.
   builder_func_ptr: Option<usize>,
+  /// The metadata of this module. The nodes that are parameterized by the module builder.
   parameterizable: Option<Vec<BaseNode>>,
+  /// The redundant data of this module. The set of users that use this module.
+  pub(crate) user_set: HashSet<OperandOf>,
 }
 
 impl Module {
@@ -42,6 +50,7 @@ impl Module {
       external_interfaces: HashMap::new(),
       builder_func_ptr: None,
       parameterizable: None,
+      user_set: HashSet::new(),
     }
   }
 
@@ -187,6 +196,23 @@ impl<'a> ModuleMut<'a> {
     to_remove.into_iter().for_each(|(ext, user)| {
       self.remove_external_interface(ext, user);
     });
+  }
+
+  /// Add related external interfaces to the module.
+  pub(crate) fn add_related_externals(&mut self, operand: BaseNode, operand_of: OperandOf) {
+    // Reconnect the external interfaces if applicable.
+    // TODO(@were): Maybe later unify a common interface for this.
+    match operand.get_kind() {
+      NodeKind::ArrayPtr => {
+        let aptr = operand.as_ref::<ArrayPtr>(self.sys).unwrap();
+        let array = aptr.get_array().clone();
+        self.insert_external_interface(array, operand_of);
+      }
+      NodeKind::FIFO => {
+        self.insert_external_interface(operand, operand_of);
+      }
+      _ => {}
+    }
   }
 
   /// Set the name of a module. Override the name given by the module builder.
