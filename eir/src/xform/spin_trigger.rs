@@ -94,7 +94,7 @@ pub(super) fn rewrite_spin_triggers(sys: &mut SysBuilder) {
     bundle[0] = agent;
     for i in 1..bundle.len() {
       let dst_module = agent.as_ref::<Module>(&mutator.sys).unwrap();
-      let port = dst_module.get_input(i - 1).unwrap().clone();
+      let port = dst_module.get_port(i - 1).unwrap().clone();
       // For each FIFO push in our system, it takes `module`, and `idx` as arguments.
       // Since we no longer call the original module, we just replace the first argument with the
       // agent module.

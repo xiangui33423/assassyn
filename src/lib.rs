@@ -86,7 +86,7 @@ pub fn module_builder(input: proc_macro::TokenStream) -> proc_macro::TokenStream
       port_ids.extend::<TokenStream>(quote! { #id, }.into());
       port_peeks.extend::<TokenStream>(
         quote! {
-          let #id = module.get_input(#i).expect(format!("Index {} exceed!", #i).as_str()).clone();
+          let #id = module.get_port(#i).expect(format!("Index {} exceed!", #i).as_str()).clone();
         }
         .into(),
       );

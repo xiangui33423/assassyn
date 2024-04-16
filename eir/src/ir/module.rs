@@ -14,7 +14,7 @@ pub struct Module {
   /// The name of this module, can be overridden by `set_name`.
   name: String,
   /// The input ports of this module.
-  inputs: Vec<BaseNode>,
+  ports: Vec<BaseNode>,
   /// The body of the module.
   body: BaseNode,
   /// The set of external interfaces used by the module.
@@ -45,7 +45,7 @@ impl Module {
     Module {
       key: 0,
       name: name.to_string(),
-      inputs,
+      ports: inputs,
       body: BaseNode::new(NodeKind::Unknown, 0),
       external_interfaces: HashMap::new(),
       builder_func_ptr: None,
@@ -68,7 +68,7 @@ impl Module {
 impl<'sys> ModuleRef<'sys> {
   /// Get the number of inputs to the module.
   pub fn get_num_inputs(&self) -> usize {
-    self.inputs.len()
+    self.ports.len()
   }
 
   /// Get the given input reference.
@@ -76,8 +76,8 @@ impl<'sys> ModuleRef<'sys> {
   /// # Arguments
   ///
   /// * `i` - The index of the input.
-  pub fn get_input(&self, i: usize) -> Option<BaseNode> {
-    self.inputs.get(i).map(|x| x.clone())
+  pub fn get_port(&self, i: usize) -> Option<BaseNode> {
+    self.ports.get(i).map(|x| x.clone())
   }
 
   /// Get the input by name.
@@ -85,9 +85,9 @@ impl<'sys> ModuleRef<'sys> {
   /// # Arguments
   ///
   /// * `name` - The name of the input.
-  pub fn get_input_by_name(&self, name: &str) -> Option<FIFORef<'_>> {
+  pub fn get_port_by_name(&self, name: &str) -> Option<FIFORef<'_>> {
     self
-      .inputs
+      .ports
       .iter()
       .find(|x| x.as_ref::<FIFO>(self.sys).unwrap().get_name().eq(name))
       .map(|x| x.clone().as_ref::<FIFO>(self.sys).unwrap())
@@ -128,7 +128,7 @@ impl<'sys> ModuleRef<'sys> {
     'borrow: 'res,
   {
     self
-      .inputs
+      .ports
       .iter()
       .map(|x| x.as_ref::<FIFO>(self.sys).unwrap())
   }
@@ -246,7 +246,7 @@ impl<'a> ModuleMut<'a> {
 impl Typed for ModuleRef<'_> {
   fn dtype(&self) -> DataType {
     let types = self
-      .inputs
+      .ports
       .iter()
       .map(|x| x.as_ref::<FIFO>(self.sys).unwrap().scalar_ty())
       .collect::<Vec<_>>();
@@ -261,9 +261,9 @@ impl SysBuilder {
   ///
   /// * `name` - The name of the module.
   /// * `inputs` - The inputs' information to the module. Refer to `PortInfo` for more details.
-  pub fn create_module(&mut self, name: &str, inputs: Vec<PortInfo>) -> BaseNode {
-    let n_inputs = inputs.len();
-    let ports = inputs
+  pub fn create_module(&mut self, name: &str, ports: Vec<PortInfo>) -> BaseNode {
+    let n_inputs = ports.len();
+    let ports = ports
       .into_iter()
       .map(|x| self.insert_element(FIFO::new(&x.ty, x.name.as_str())))
       .collect::<Vec<_>>();
@@ -275,7 +275,7 @@ impl SysBuilder {
       let input = module
         .as_ref::<Module>(self)
         .unwrap()
-        .get_input(i)
+        .get_port(i)
         .unwrap()
         .clone();
       let mut fifo_mut = self.get_mut::<FIFO>(&input).unwrap();

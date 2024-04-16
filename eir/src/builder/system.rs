@@ -511,7 +511,7 @@ impl SysBuilder {
     assert!(!bind.get_bound().contains_key(&key));
     let module = bind.get_callee().as_ref::<Module>(self).unwrap();
     let port = module
-      .get_input_by_name(&key)
+      .get_port_by_name(&key)
       .expect(format!("{} is NOT a FIFO of {}", key, module.get_name()).as_str());
     assert_eq!(port.scalar_ty(), value.get_dtype(self).unwrap());
     let port_idx = port.idx();
@@ -576,7 +576,7 @@ impl SysBuilder {
       NodeKind::Module => module
         .as_ref::<Module>(self)
         .unwrap()
-        .get_input(idx)
+        .get_port(idx)
         .expect("Invalid port index")
         .clone(),
       _ => {
