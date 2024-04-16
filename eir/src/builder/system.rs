@@ -401,6 +401,18 @@ impl SysBuilder {
     res
   }
 
+  fn insert_external_interface(&mut self, ext: BaseNode, expr: BaseNode, operand_idx: usize) {
+    let cur_mod = self.get_current_module().unwrap().upcast();
+    let operand = expr
+      .as_ref::<Expr>(self)
+      .unwrap()
+      .get_operand(operand_idx)
+      .unwrap()
+      .upcast();
+    let mut mod_mut = self.get_mut::<Module>(&cur_mod).unwrap();
+    mod_mut.insert_external_interface(ext, operand);
+  }
+
   /// The helper function to insert an element into the current insert point.
   fn insert_at_ip(&mut self, expr: BaseNode) -> BaseNode {
     let InsertPoint(_, block, _) = &self.inesert_point;
@@ -591,15 +603,7 @@ impl SysBuilder {
 
     // Maintain the external interface redundancy when it is determined.
     if !port.as_ref::<FIFO>(self).unwrap().is_placeholder() {
-      let src = self.get_current_module().unwrap().upcast();
-      let callee_operand = res
-        .as_ref::<Expr>(self)
-        .unwrap()
-        .get_operand(0)
-        .unwrap()
-        .upcast();
-      let mut src_mut = self.get_mut::<Module>(&src).unwrap();
-      src_mut.insert_external_interface(port, callee_operand);
+      self.insert_external_interface(port, res.clone(), 0);
     }
 
     res
@@ -614,17 +618,7 @@ impl SysBuilder {
     let array = self.get::<ArrayPtr>(&ptr).unwrap().get_array().clone();
     let dtype = self.get::<Array>(&array).unwrap().scalar_ty().clone();
     let res = self.create_expr(dtype, Opcode::Load, vec![ptr.clone()]);
-    let cur_mod = self.inesert_point.0.clone();
-    let array_operand = res
-      .as_ref::<Expr>(self)
-      .unwrap()
-      .get_operand(0)
-      .unwrap()
-      .upcast();
-    self
-      .get_mut::<Module>(&cur_mod)
-      .unwrap()
-      .insert_external_interface(array.clone(), array_operand);
+    self.insert_external_interface(array.clone(), res.clone(), 0);
     res
   }
 
@@ -638,17 +632,7 @@ impl SysBuilder {
     let array = self.get::<ArrayPtr>(&ptr).unwrap().get_array().clone();
     let operands = vec![ptr.clone(), value.clone()];
     let res = self.create_expr(DataType::void(), Opcode::Store, operands);
-    let cur_mod = self.inesert_point.0.clone();
-    let array_operand = res
-      .as_ref::<Expr>(self)
-      .unwrap()
-      .get_operand(0)
-      .unwrap()
-      .upcast();
-    self
-      .get_mut::<Module>(&cur_mod)
-      .unwrap()
-      .insert_external_interface(array.clone(), array_operand);
+    self.insert_external_interface(array, res.clone(), 0);
     res
   }
 
