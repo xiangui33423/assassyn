@@ -50,9 +50,9 @@ pub(super) fn rewrite_spin_triggers(sys: &mut SysBuilder) {
     };
     let mut mutator = sys.get_mut::<Expr>(&spin_trigger).unwrap();
     // Conditional lock.
-    let lock_handle = mutator.get().get_operand(0).unwrap().clone();
+    let lock_handle = mutator.get().get_operand(0).unwrap().get_value().clone();
     // Destination module
-    let dest_module = mutator.get().get_operand(1).unwrap().clone();
+    let dest_module = mutator.get().get_operand(1).unwrap().get_value().clone();
     let module_signature = dest_module.get_dtype(mutator.sys).unwrap();
     let mut ports = match module_signature {
       DataType::Module(ports) => ports
@@ -88,7 +88,7 @@ pub(super) fn rewrite_spin_triggers(sys: &mut SysBuilder) {
       .get()
       .operand_iter()
       .skip(1)
-      .cloned()
+      .map(|x| x.get_value().clone())
       .collect::<Vec<_>>();
     // Instead of calling the original destination module, we call the agent module.
     bundle[0] = agent;

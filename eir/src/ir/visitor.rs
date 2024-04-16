@@ -17,11 +17,7 @@ pub trait Visitor<T> {
 
   fn visit_expr(&mut self, expr: &ExprRef<'_>) -> Option<T> {
     for elem in expr.operand_iter() {
-      if let Some(x) = self.dispatch(
-        expr.sys,
-        elem,
-        vec![NodeKind::Module, NodeKind::Array, NodeKind::FIFO],
-      ) {
+      if let Some(x) = self.visit_operand(&elem) {
         return x.into();
       }
     }
@@ -66,6 +62,10 @@ pub trait Visitor<T> {
     None
   }
 
+  fn visit_operand(&mut self, _: &OperandRef<'_>) -> Option<T> {
+    None
+  }
+
   fn dispatch(&mut self, sys: &SysBuilder, node: &BaseNode, non_recur: Vec<NodeKind>) -> Option<T> {
     if non_recur.contains(&node.get_kind()) {
       return None;
@@ -80,6 +80,7 @@ pub trait Visitor<T> {
       NodeKind::ArrayPtr => self.visit_handle(&node.as_ref::<ArrayPtr>(sys).unwrap()),
       NodeKind::StrImm => self.visit_string_imm(&node.as_ref::<StrImm>(sys).unwrap()),
       NodeKind::Bind => self.visit_bind(&node.as_ref::<Bind>(sys).unwrap()),
+      NodeKind::Operand => self.visit_operand(&node.as_ref::<Operand>(sys).unwrap()),
       NodeKind::Unknown => {
         panic!("Unknown node type")
       }
