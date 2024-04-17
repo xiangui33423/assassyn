@@ -223,7 +223,7 @@ impl Visitor<String> for ElaborateModule<'_, '_> {
             )
           };
           format!(
-            "q.push(Reverse(Event{{ stamp: stamp + 100, kind: {} }}))",
+            "q.push(Reverse(Event{{ stamp: stamp + 200, kind: {} }}))",
             to_trigger
           )
         }

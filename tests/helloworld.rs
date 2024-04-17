@@ -11,11 +11,18 @@ fn helloworld() {
 
   println!("{}", sys);
 
+  let verilog_name = test_utils::temp_dir(&"helloworld.sv".to_string());
+  let verilog_config = eir::verilog::Config {
+    fname: verilog_name,
+    sim_threshold: 2,
+  };
+  eir::verilog::elaborate(&sys, &verilog_config).unwrap();
+
   let src_name = test_utils::temp_dir(&"helloworld.rs".to_string());
   let config = eir::sim::Config {
     fname: src_name,
-    sim_threshold: 1,
-    idle_threshold: 1,
+    sim_threshold: 2,
+    idle_threshold: 2,
   };
 
   eir::builder::verify(&sys);

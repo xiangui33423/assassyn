@@ -6,6 +6,7 @@ pub enum DataType {
   Int(usize),
   UInt(usize),
   Fp32,
+  Str,
   Module(Vec<Box<DataType>>),
   ArrayType(Box<DataType>, usize),
 }
@@ -53,6 +54,7 @@ impl DataType {
       DataType::Int(bits) => *bits,
       DataType::UInt(bits) => *bits,
       DataType::Fp32 => 32,
+      DataType::Str => 0,
       DataType::Module(_) => 0,
       DataType::ArrayType(ty, size) => ty.bits() * size,
     }
@@ -100,6 +102,7 @@ impl ToString for DataType {
       &DataType::Int(_) => format!("i{}", self.bits()),
       &DataType::UInt(_) => format!("u{}", self.bits()),
       &DataType::Fp32 => format!("f{}", self.bits()),
+      &DataType::Str => "Str".to_string(),
       &DataType::Void => String::from("()"),
       &DataType::ArrayType(ty, size) => format!("array[{} x {}]", ty.to_string(), size),
       &DataType::Module(args) => format!(
@@ -122,16 +125,23 @@ pub struct IntImm {
 
 pub struct StrImm {
   pub(crate) key: usize,
+  dtype: DataType,
   value: String,
 }
 
 impl StrImm {
   pub fn new(value: String) -> Self {
-    Self { key: 0, value }
+    Self { key: 0, dtype: DataType::Str, value }
   }
 
   pub fn get_value(&self) -> &str {
     self.value.as_str()
+  }
+}
+
+impl Typed for StrImm {
+  fn dtype(&self) -> DataType {
+    self.dtype.clone()
   }
 }
 
