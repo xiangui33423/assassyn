@@ -42,6 +42,13 @@ fn bind() {
   eir::builder::verify(&sys);
   println!("{}", sys);
 
+  let verilog_name = test_utils::temp_dir(&"bind.sv".to_string());
+  let verilog_config = eir::verilog::Config {
+    fname: verilog_name,
+    sim_threshold: 100,
+  };
+  eir::verilog::elaborate(&sys, &verilog_config).unwrap();
+
   let src_name = test_utils::temp_dir(&"bind.rs".to_string());
   let config = eir::sim::Config {
     fname: src_name,
@@ -72,5 +79,5 @@ fn bind() {
       }
     })
     .count();
-  assert_eq!(times_invoked, 99);
+  assert_eq!(times_invoked, 97);
 }

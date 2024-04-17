@@ -26,14 +26,14 @@ fn adder() {
   let verilog_name = test_utils::temp_dir(&"adder.sv".to_string());
   let verilog_config = eir::verilog::Config {
     fname: verilog_name,
-    sim_threshold: 100,
+    sim_threshold: 101,
   };
   eir::verilog::elaborate(&sys, &verilog_config).unwrap();
 
   let src_name = test_utils::temp_dir(&"adder.rs".to_string());
   let config = eir::sim::Config {
     fname: src_name,
-    sim_threshold: 100,
+    sim_threshold: 101,
     idle_threshold: 100,
   };
 
