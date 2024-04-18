@@ -56,7 +56,7 @@ fn get_triggered_modules(node: &BaseNode, sys: &SysBuilder) -> Vec<String> {
     NodeKind::Expr => {
       let expr = node.as_ref::<Expr>(sys).unwrap();
       if expr.get_opcode() == Opcode::Trigger {
-        let triggered_module = expr.get_operand(0).unwrap().as_ref::<Module>(sys).unwrap();
+        let triggered_module = expr.get_operand(0).unwrap().get_value().as_ref::<Module>(sys).unwrap();
         triggered_modules.push(namify(triggered_module.get_name()));
       }
     }
@@ -363,9 +363,9 @@ assign trigger_pop_ready = 1'b1;\n\n");
         expr.dtype().bits() - 1,
         expr.get_key(),
         expr.get_key(),
-        dump_ref!(self.sys, expr.get_operand(0).unwrap()),
+        dump_ref!(self.sys, expr.get_operand(0).unwrap().get_value()),
         expr.get_opcode().to_string(),
-        dump_ref!(self.sys, expr.get_operand(1).unwrap())
+        dump_ref!(self.sys, expr.get_operand(1).unwrap().get_value())
       ))
     } else if expr.get_opcode().is_unary() {
       Some(format!(
@@ -374,7 +374,7 @@ assign trigger_pop_ready = 1'b1;\n\n");
         expr.get_key(),
         expr.get_key(),
         expr.get_opcode().to_string(),
-        dump_ref!(self.sys, expr.get_operand(0).unwrap())
+        dump_ref!(self.sys, expr.get_operand(0).unwrap().get_value())
       ))
      }  else {
       match expr.get_opcode() {
@@ -383,6 +383,7 @@ assign trigger_pop_ready = 1'b1;\n\n");
           let fifo = expr
             .get_operand(0)
             .unwrap()
+            .get_value()
             .as_ref::<FIFO>(self.sys)
             .unwrap();
           Some(format!(
@@ -397,9 +398,9 @@ assign trigger_pop_ready = 1'b1;\n\n");
         }
 
         Opcode::Log => {
-          let mut format_str = dump_ref!(self.sys, expr.operand_iter().collect::<Vec<&BaseNode>>().first().unwrap());
+          let mut format_str = dump_ref!(self.sys, expr.operand_iter().collect::<Vec<OperandRef>>().first().unwrap().get_value());
           for elem in expr.operand_iter().skip(1) {
-            format_str = format_str.replacen("{}", match elem.get_dtype(self.sys).unwrap() {
+            format_str = format_str.replacen("{}", match elem.get_value().get_dtype(self.sys).unwrap() {
               DataType::Int(_) => "%d",
               DataType::Str => "%s",
               _ => "?",
@@ -412,7 +413,7 @@ assign trigger_pop_ready = 1'b1;\n\n");
           res.push_str(format_str.as_str());
           res.push_str("\", $time, ");
           for elem in expr.operand_iter().skip(1) {
-            res.push_str(format!("{}, ", dump_ref!(self.sys, elem)).as_str());
+            res.push_str(format!("{}, ", dump_ref!(self.sys, elem.get_value())).as_str());
           }
           res.pop(); res.pop();
           res.push_str(");\n");
@@ -424,6 +425,7 @@ assign trigger_pop_ready = 1'b1;\n\n");
           let array_ref = &(expr
             .get_operand(0)
             .unwrap()
+            .get_value()
             .as_ref::<ArrayPtr>(self.sys)
             .unwrap())
             .get_array()
@@ -442,6 +444,7 @@ assign trigger_pop_ready = 1'b1;\n\n");
           let array_ref = &(expr
             .get_operand(0)
             .unwrap()
+            .get_value()
             .as_ref::<ArrayPtr>(self.sys)
             .unwrap())
             .get_array()
@@ -452,12 +455,12 @@ assign trigger_pop_ready = 1'b1;\n\n");
             namify(array_ref.get_name()),
             (self.pred.clone().and_then(|p| Some(format!(" && {}", p)))).unwrap_or("".to_string()),
             namify(array_ref.get_name()),
-            dump_ref!(expr.sys, expr.get_operand(1).unwrap())
+            dump_ref!(expr.sys, expr.get_operand(1).unwrap().get_value())
           ))
         }
 
         Opcode::FIFOPush => {
-          let fifo = expr.get_operand(0).unwrap().as_ref::<FIFO>(self.sys).unwrap();
+          let fifo = expr.get_operand(0).unwrap().get_value().as_ref::<FIFO>(self.sys).unwrap();
           let fifo_name = namify(format!(
             "{}_{}",
             fifo.get_parent().as_ref::<Module>(self.sys).unwrap().get_name(),
@@ -467,7 +470,7 @@ assign trigger_pop_ready = 1'b1;\n\n");
             Some(fps) => {
               fps.push((
                 self.pred.clone().unwrap_or("".to_string()),
-                dump_ref!(self.sys, expr.get_operand(1).unwrap())
+                dump_ref!(self.sys, expr.get_operand(1).unwrap().get_value())
               ))
             }
             None => {
@@ -475,7 +478,7 @@ assign trigger_pop_ready = 1'b1;\n\n");
                 fifo_name.clone(),
                 vec![(
                   self.pred.clone().unwrap_or("".to_string()),
-                  dump_ref!(self.sys, expr.get_operand(1).unwrap())
+                  dump_ref!(self.sys, expr.get_operand(1).unwrap().get_value())
                 )]
               );
             }
@@ -484,14 +487,17 @@ assign trigger_pop_ready = 1'b1;\n\n");
         }
 
         Opcode::FIFOPeek => {
-          let fifo = expr.get_operand(0).unwrap().as_ref::<FIFO>(self.sys).unwrap();
+          let fifo = expr.get_operand(0).unwrap().get_value().as_ref::<FIFO>(self.sys).unwrap();
           let fifo_name = namify(format!(
             "{}_{}",
             fifo.get_parent().as_ref::<Module>(self.sys).unwrap().get_name(),
             fifo_name!(fifo)
           ).as_str());
           Some(format!(
-            "// TODO: FIFOPeek {}\n\n",
+            "logic [{}:0] _{};\nassign _{} = fifo_{}_pop_data;\n\n",
+            fifo.scalar_ty().bits() - 1,
+            expr.get_key(),
+            expr.get_key(),
             fifo_name
           ))
         }
@@ -500,6 +506,7 @@ assign trigger_pop_ready = 1'b1;\n\n");
           let module = expr
             .get_operand(0)
             .unwrap()
+            .get_value()
             .as_ref::<Module>(self.sys)
             .unwrap();
           let module_name = namify(module.get_name());
