@@ -19,9 +19,11 @@ fn adder() {
   });
 
   let mut sys = SysBuilder::new("main");
-  eir::builder::verify(&sys);
   let adder = adder_builder(&mut sys);
   driver_builder(&mut sys, adder);
+  eir::builder::verify(&sys);
+
+  eprintln!("{}", sys);
 
   let verilog_name = test_utils::temp_dir(&"adder.sv".to_string());
   let verilog_config = eir::verilog::Config {
