@@ -279,17 +279,15 @@ impl Visitor<String> for ElaborateModule<'_, '_> {
           if !fifo.is_placeholder() {
             quote::quote! {
               q.push(Reverse(Event{
-                stamp: stamp + 50,
+                stamp: stamp + 150,
                 kind: EventKind::#fifo_push((EventKind::#module_writer.into(), #slab_idx, #value))
               }))
             }
             .to_string()
           } else {
-            let module = dump_ref!(self.sys, expr.get_operand(0).unwrap().get_value());
-            format!(
-              "// q.push(Reverse(Event{{ stamp: stamp + 50, kind: to_push({}.as_ref().clone(), {}, {} as u64) }}))",
-              module, fifo.idx(), value
-            )
+            panic!(
+              "FIFO is a placeholder, cannot push to it! Did you forget to rewrite callbacks?"
+            );
           }
         }
         Opcode::Log => {
