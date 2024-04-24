@@ -14,20 +14,13 @@ module_builder!(
 
 fn manual() -> SysBuilder {
   module_builder!(
-    spin_agent[a:int<32>][sqr] {
-      lock = array(int<1>, 1);
-      v = lock[0];
-      when v {
+    spin_agent[a:int<32>][sqr, lock] {
+      wait_until lock[0] {
         a = a.pop();
-        async sqr {a: a};
+        async sqr { a: a };
         log("agent move on, {}", a);
       }
-      nv = v.flip();
-      when nv {
-        log("agent backpressure");
-        async self {};
-      }
-    }.expose[lock]
+    }
   );
 
   module_builder!(
@@ -53,7 +46,8 @@ fn manual() -> SysBuilder {
 
   let mut res = SysBuilder::new("raw");
   let sqr = squarer_builder(&mut res);
-  let (spin_agent, lock) = spin_agent_builder(&mut res, sqr);
+  let lock = res.create_array(eir::ir::DataType::Int(1), "lock", 1);
+  let spin_agent = spin_agent_builder(&mut res, sqr, lock);
   let _driver = driver_builder(&mut res, spin_agent, lock);
   res
 }
@@ -96,7 +90,7 @@ fn testit(fname: &str, mut sys: SysBuilder) {
   eir::builder::verify(&sys);
   eir::xform::basic(&mut sys);
   eir::builder::verify(&sys);
-  // println!("{}", sys);
+  println!("{}", sys);
   let verilog_name = test_utils::temp_dir(&format!("{}.sv", fname));
   let verilog_config = eir::verilog::Config {
     fname: verilog_name,
@@ -123,7 +117,7 @@ fn testit(fname: &str, mut sys: SysBuilder) {
       }
       if l.contains("squarer") {
         let (cycle, _) = parse_cycle(l);
-        assert!(cycle % 4 == 2 || cycle % 4 == 3, "{}", l);
+        assert!(cycle % 4 == 0 || cycle % 4 == 3, "{}", l);
       }
     });
 }
