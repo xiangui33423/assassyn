@@ -734,7 +734,6 @@ macro_rules! impl_unwrap_slab {
     }
     .to_string(),
   );
-  res.push_str("let last_stamp = stamp;\n");
   res.push_str("    match event.0.kind {\n");
   for module in sys.module_iter() {
     let module_eventkind = &format!("Module{}", camelize(&namify(module.get_name())));
@@ -842,18 +841,6 @@ macro_rules! impl_unwrap_slab {
   }
   res.push_str("EventKind::None => panic!(\"Unexpected event kind, None\"),\n");
   res.push_str("}\n");
-  // res.push_str("if stamp != last_stamp {\n");
-  // // reset cycle gatekeepers
-  // for module in sys.module_iter() {
-  //   let module_gatekeeper = syn::Ident::new(&format!("{}_triggered", namify(module.get_name())), Span::call_site());
-  //   res.push_str(
-  //     &quote::quote! {
-  //       #module_gatekeeper = false;
-  //     }
-  //     .to_string(),
-  //   );
-  // }
-  // res.push_str("}\n");
   let threshold = config.idle_threshold;
   res.push_str(
     &quote::quote! {
