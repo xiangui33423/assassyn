@@ -31,6 +31,8 @@ pub enum Opcode {
   // Unary operations
   Neg,
   Flip,
+  // Triary operations
+  Select,
   // Eventual operations
   FIFOPush,
   FIFOPop,
@@ -50,11 +52,6 @@ impl Opcode {
       Opcode::Add
       | Opcode::Mul
       | Opcode::Sub
-      | Opcode::IGT
-      | Opcode::ILT
-      | Opcode::IGE
-      | Opcode::ILE
-      | Opcode::EQ
       | Opcode::BitwiseAnd
       | Opcode::BitwiseOr
       | Opcode::BitwiseXor => true,
@@ -64,6 +61,12 @@ impl Opcode {
   pub fn is_unary(&self) -> bool {
     match self {
       Opcode::Neg | Opcode::Flip => true,
+      _ => false,
+    }
+  }
+  pub fn is_cmp(&self) -> bool {
+    match self {
+      Opcode::IGT | Opcode::ILT | Opcode::IGE | Opcode::ILE | Opcode::EQ => true,
       _ => false,
     }
   }
@@ -94,6 +97,7 @@ impl ToString for Opcode {
       Opcode::FIFOPeek => "peek".into(),
       Opcode::Log => "log".into(),
       Opcode::Slice => "slice".into(),
+      Opcode::Select => "select".into(),
     }
   }
 }

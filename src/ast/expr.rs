@@ -1,16 +1,30 @@
 use eir::ir::DataType;
 use syn::{parenthesized, parse::Parse};
 
-pub(crate) enum Expr {
+pub(crate) enum ExprTerm {
   Ident(syn::Ident),
   Const((DType, syn::LitInt)),
+  StrLit(syn::LitStr),
 }
 
-impl Parse for Expr {
+impl ExprTerm {
+  pub(crate) fn span(&self) -> proc_macro2::Span {
+    match self {
+      ExprTerm::Ident(id) => id.span(),
+      ExprTerm::Const((_, lit)) => lit.span(),
+      ExprTerm::StrLit(lit) => lit.span(),
+    }
+  }
+}
+
+impl Parse for ExprTerm {
   fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
-    if let Some(_) = input.cursor().ident() {
-      let id = input.clone().parse::<syn::Ident>()?;
-      Ok(Expr::Ident(id))
+    if input.peek(syn::LitStr) {
+      let lit = input.parse::<syn::LitStr>()?;
+      Ok(ExprTerm::StrLit(lit))
+    } else if let Some(_) = input.cursor().ident() {
+      let id = input.parse::<syn::Ident>()?;
+      Ok(ExprTerm::Ident(id))
     } else if let Some(_) = input.cursor().literal() {
       let lit = input.parse::<syn::LitInt>()?;
       let ty = if input.peek(syn::Token![.]) {
@@ -22,12 +36,83 @@ impl Parse for Expr {
           dtype: DataType::int(32),
         }
       };
-      Ok(Expr::Const((ty, lit)))
+      Ok(ExprTerm::Const((ty, lit)))
     } else {
       Err(syn::Error::new(
         input.span(),
         "Expected identifier or literal",
       ))
+    }
+  }
+}
+
+pub(crate) enum Expr {
+  // ExprTerm . syn::Ident ( ExprTerm ): a.add(b)
+  Binary((ExprTerm, syn::Ident, ExprTerm)),
+  // ExprTerm . syn::Ident ( ): a.flip()
+  Unary((ExprTerm, syn::Ident)),
+  // "default" ExprTerm . "case" ( ExprTerm, ExprTerm )
+  //                    . "case" ( ExprTerm, ExprTerm ) *
+  Select((ExprTerm, Vec<(ExprTerm, ExprTerm)>)),
+  // ExprTerm . slice ( ExprTerm, ExprTerm )
+  Slice((ExprTerm, ExprTerm, ExprTerm)),
+  // ExprTerm
+  Term(ExprTerm),
+}
+
+impl Parse for Expr {
+  fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
+    let tok = input.parse::<ExprTerm>()?;
+    if let ExprTerm::Ident(id) = &tok {
+      match id.to_string().as_str() {
+        "default" => {
+          let default_value = input.parse::<ExprTerm>()?;
+          let mut cases = Vec::new();
+          while !input.peek(syn::Token![;]) {
+            input.parse::<syn::Token![.]>()?; // Consume "."
+            input.parse::<syn::Ident>()?; // Consume "case"
+            let content;
+            parenthesized!(content in input);
+            let cond = content.parse::<ExprTerm>()?;
+            content.parse::<syn::Token![,]>().expect("Expect a \",\""); // Consume ","
+            let value = content.parse::<ExprTerm>()?;
+            cases.push((cond, value));
+          }
+          return Ok(Expr::Select((default_value, cases)));
+        }
+        _ => {}
+      }
+    }
+    if !input.peek(syn::Token![.]) {
+      return Ok(Expr::Term(tok));
+    }
+    let a = tok;
+    input.parse::<syn::Token![.]>()?; // Consume "."
+    let operator = input.parse::<syn::Ident>()?;
+    let content;
+    parenthesized!(content in input);
+    match operator.to_string().as_str() {
+      "slice" => {
+        let l = content.parse::<ExprTerm>()?;
+        content.parse::<syn::Token![,]>()?; // Consume ","
+        let r = content.parse::<ExprTerm>()?;
+        Ok(Expr::Slice((a, l, r)))
+      }
+      // TODO(@were): Deprecate pop, make it opaque to users.
+      "flip" | "pop" => Ok(Expr::Unary((a, operator))),
+      "add" | "mul" | "sub" | "igt" | "ilt" | "ige" | "ile" | "eq" | "bitwise_and" => {
+        let b = content.parse::<ExprTerm>()?;
+        Ok(Expr::Binary((a, operator, b)))
+      }
+      _ => Err(syn::Error::new(
+        operator.span(),
+        format!(
+          "{}:{}: Unsupported operator: \"{}\"",
+          file!(),
+          line!(),
+          operator.to_string()
+        ),
+      )),
     }
   }
 }
