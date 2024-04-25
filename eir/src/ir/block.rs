@@ -130,7 +130,7 @@ impl SysBuilder {
         let arr_read = self.create_array_read(arr_ptr);
         BlockPred::WaitUntil(arr_read)
       }
-      x => x
+      x => x,
     };
     let parent = self.get_current_block().unwrap().upcast();
     let instance = Block::new(pred, parent);

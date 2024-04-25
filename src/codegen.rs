@@ -327,7 +327,7 @@ pub(crate) fn emit_parse_instruction(inst: &Instruction) -> syn::Result<TokenStr
 
       let block_pred = match pred {
         BodyPred::Condition(cond) => {
-          quote!{
+          quote! {
             let cond = #cond.clone();
             let block_pred = eir::ir::block::BlockPred::Condition(cond);
           }
