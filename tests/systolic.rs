@@ -215,12 +215,12 @@ fn systolic_array() {
   println!("{}", sys);
   eir::builder::verify(&sys);
 
-  // let verilog_name = test_utils::temp_dir(&"systolic.sv".to_string());
-  // let verilog_config = eir::verilog::Config {
-  //   fname: verilog_name,
-  //   sim_threshold: 100,
-  // };
-  // eir::verilog::elaborate(&sys, &verilog_config).unwrap();
+  let verilog_name = test_utils::temp_dir(&"systolic.sv".to_string());
+  let verilog_config = eir::verilog::Config {
+    fname: verilog_name,
+    sim_threshold: 100,
+  };
+  eir::verilog::elaborate(&sys, &verilog_config).unwrap();
 
   let src_name = test_utils::temp_dir(&"systolic.rs".to_string());
   let config = eir::sim::Config {
