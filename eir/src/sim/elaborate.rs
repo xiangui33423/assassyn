@@ -272,6 +272,15 @@ impl Visitor<String> for ElaborateModule<'_, '_> {
             .unwrap();
           format!("{}.front().unwrap().clone()", fifo_name!(fifo))
         }
+        Opcode::FIFOValid => {
+          let fifo = expr
+            .get_operand(0)
+            .unwrap()
+            .get_value()
+            .as_ref::<FIFO>(self.sys)
+            .unwrap();
+          format!("!{}.is_empty()", fifo_name!(fifo))
+        }
         Opcode::FIFOPush => {
           let fifo = expr
             .get_operand(0)
@@ -325,7 +334,7 @@ impl Visitor<String> for ElaborateModule<'_, '_> {
               .get_value()
               .get_dtype(self.sys)
               .unwrap();
-            dtype.bits()
+            dtype.get_bits()
           };
           format!(
             "{{
@@ -392,7 +401,7 @@ impl Visitor<String> for ElaborateModule<'_, '_> {
         res.push_str(&format!(
           "  if {}{} {{\n",
           dump_ref!(self.sys, &cond),
-          if cond.get_dtype(block.sys).unwrap().bits() == 1 {
+          if cond.get_dtype(block.sys).unwrap().get_bits() == 1 {
             "".into()
           } else {
             format!(" != 0")
@@ -411,7 +420,7 @@ impl Visitor<String> for ElaborateModule<'_, '_> {
         res.push_str(&format!(
           "  if {}{} {{\n",
           cond,
-          if dtype.bits() == 1 {
+          if dtype.get_bits() == 1 {
             "".into()
           } else {
             format!(" != 0")
@@ -703,7 +712,7 @@ macro_rules! impl_unwrap_slab {
       &format!("Array{}", array_ty_to_id(&scalar_ty, size)),
       Span::call_site(),
     );
-    let init_scalar = if scalar_ty.bits() == 1 {
+    let init_scalar = if scalar_ty.get_bits() == 1 {
       "false".into()
     } else {
       format!("0 as {}", scalar_str)
