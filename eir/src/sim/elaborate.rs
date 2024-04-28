@@ -387,8 +387,8 @@ impl Visitor<String> for ElaborateModule<'_, '_> {
 
   fn visit_block(&mut self, block: &BlockRef<'_>) -> Option<String> {
     let mut res = String::new();
-    match block.get_pred() {
-      BlockPred::Condition(cond) => {
+    match block.get_kind() {
+      BlockKind::Condition(cond) => {
         res.push_str(&format!(
           "  if {}{} {{\n",
           dump_ref!(self.sys, &cond),
@@ -399,21 +399,28 @@ impl Visitor<String> for ElaborateModule<'_, '_> {
           }
         ));
       }
-      BlockPred::Cycle(cycle) => {
+      BlockKind::Cycle(cycle) => {
         res.push_str(&format!("  if stamp / 100 == {} {{\n", cycle));
       }
-      BlockPred::WaitUntil(wait) => {
+      BlockKind::WaitUntil(cond) => {
+        let dtype = {
+          let cond = cond.as_ref::<Block>(block.sys).unwrap();
+          cond.get_value().unwrap().get_dtype(block.sys).unwrap()
+        };
+        let cond = self.dispatch(block.sys, &cond, vec![]).unwrap();
         res.push_str(&format!(
           "  if {}{} {{\n",
-          dump_ref!(self.sys, &wait),
-          if wait.get_dtype(block.sys).unwrap().bits() == 1 {
+          cond,
+          if dtype.bits() == 1 {
             "".into()
           } else {
             format!(" != 0")
           }
         ));
       }
-      BlockPred::None => (),
+      BlockKind::Valued(_) | BlockKind::None => {
+        res.push('{');
+      }
     }
     self.indent += 2;
     for elem in block.iter() {
@@ -432,12 +439,12 @@ impl Visitor<String> for ElaborateModule<'_, '_> {
       }
     }
     self.indent -= 2;
-    if let BlockPred::Condition(_) = block.get_pred() {}
-    match block.get_pred() {
-      BlockPred::Condition(_) | BlockPred::Cycle(_) => {
+    if let BlockKind::Condition(_) = block.get_kind() {}
+    match block.get_kind() {
+      BlockKind::Condition(_) | BlockKind::Cycle(_) => {
         res.push_str(&format!("{}}}\n", " ".repeat(self.indent)));
       }
-      BlockPred::WaitUntil(_) => {
+      BlockKind::WaitUntil(_) => {
         res.push_str(&format!("{}}} else {{\n", " ".repeat(self.indent)));
         let module_eventkind_id = self.current_module_id();
         res.push_str(
@@ -452,7 +459,13 @@ impl Visitor<String> for ElaborateModule<'_, '_> {
         );
         res.push_str(&format!("{}}}\n", " ".repeat(self.indent)));
       }
-      BlockPred::None => (),
+      BlockKind::Valued(value) => {
+        res.push_str(&dump_ref!(self.sys, value));
+        res.push('}');
+      }
+      BlockKind::None => {
+        res.push('}');
+      }
     }
     res.into()
   }
@@ -770,8 +783,8 @@ macro_rules! impl_unwrap_slab {
       .filter_map(|n| -> Option<usize> {
         if n.get_kind() == NodeKind::Block {
           let block = n.as_ref::<Block>(sys).unwrap();
-          match block.get_pred() {
-            BlockPred::Cycle(cycle) => Some(*cycle),
+          match block.get_kind() {
+            BlockKind::Cycle(cycle) => Some(*cycle),
             _ => None,
           }
         } else {

@@ -33,11 +33,18 @@ pub trait Visitor<T> {
   }
 
   fn visit_block(&mut self, block: &BlockRef<'_>) -> Option<T> {
-    if let BlockPred::Condition(cond) = block.get_pred() {
-      self.dispatch(block.sys, cond, vec![]);
+    match block.get_kind() {
+      BlockKind::Condition(cond) | BlockKind::WaitUntil(cond) => {
+        if let Some(x) = self.dispatch(block.sys, cond, vec![]) {
+          return x.into();
+        }
+      }
+      _ => {}
     }
     for elem in block.iter() {
-      self.dispatch(block.sys, elem, vec![]);
+      if let Some(x) = self.dispatch(block.sys, elem, vec![]) {
+        return x.into();
+      }
     }
     None
   }

@@ -15,7 +15,7 @@ module_builder!(
 fn manual() -> SysBuilder {
   module_builder!(
     spin_agent[a:int<32>][sqr, lock] {
-      wait_until lock[0] {
+      wait_until { v = lock[0]; v } {
         a = a.pop();
         async sqr { a: a };
         log("agent move on, {}", a);
@@ -90,7 +90,9 @@ fn testit(fname: &str, mut sys: SysBuilder) {
   eir::builder::verify(&sys);
   eir::xform::basic(&mut sys);
   eir::builder::verify(&sys);
-  println!("{}", sys);
+
+  // println!("{}", sys);
+
   let verilog_name = test_utils::temp_dir(&format!("{}.sv", fname));
   let verilog_config = eir::verilog::Config {
     fname: verilog_name,

@@ -167,6 +167,12 @@ impl Visitor<String> for IRPrinter {
         res.push('\n');
       }
     }
+    if let Some(builder_ptr) = module.get_builder_func_ptr() {
+      res.push_str(&" ".repeat(self.indent));
+      res.push_str(&format!("// Builder Function: 0x{:x}", builder_ptr));
+    }
+    res.push_str(&" ".repeat(self.indent));
+    res.push_str(&format!("// Key: {}", module.get_key()));
     res.push_str(&format!(
       "{}module {}(",
       " ".repeat(self.indent),
@@ -177,49 +183,21 @@ impl Visitor<String> for IRPrinter {
       res.push_str(&self.visit_input(&elem).unwrap());
       res.push_str(", ");
     }
-    res.push_str(&format!(") {{ // key: {}", module.get_key()));
-    if let Some(builder_ptr) = module.get_builder_func_ptr() {
-      res.push_str(&format!(", builder-func: 0x{:x}", builder_ptr));
-    }
-    res.push('\n');
-    self.indent += 2;
+    res.push_str(") {\n");
+    self.inc_indent();
     if module.get_name().eq("driver") {
       res.push_str(&format!("{}while true {{\n", " ".repeat(self.indent)));
-      self.indent += 2;
+      self.inc_indent();
     }
-    let InsertPoint(cur_mod, _, at) = module.sys.get_insert_point();
-    for (i, elem) in module.get_body().iter().enumerate() {
-      if cur_mod == module.upcast() && at.unwrap_or_else(|| module.get_num_exprs()) == i {
-        res.push_str(&format!(
-          "{}-----{{Insert Here}}-----\n",
-          " ".repeat(self.indent)
-        ));
-      }
-      match elem.get_kind() {
-        NodeKind::Expr => {
-          let expr = elem.as_ref::<Expr>(module.sys).unwrap();
-          res.push_str(&format!("{}\n", self.visit_expr(&expr).unwrap()));
-        }
-        NodeKind::Block => {
-          let block = elem.as_ref::<Block>(module.sys).unwrap();
-          res.push_str(&format!("{}\n", self.visit_block(&block).unwrap()));
-        }
-        _ => {
-          panic!("Not an block-able element: {:?}", elem);
-        }
-      }
-    }
-    if at.is_none() && cur_mod == module.upcast() {
-      res.push_str(&format!(
-        "{}-----{{Insert Here}}-----\n",
-        " ".repeat(self.indent)
-      ));
-    }
+
+    let body = self.visit_block(&module.get_body()).unwrap();
+    res.push_str(&body[self.indent..].to_string());
+
     if module.get_name().eq("driver") {
-      self.indent -= 2;
+      self.dec_indent();
       res.push_str(&format!("{}}}\n", " ".repeat(self.indent)));
     }
-    self.indent -= 2;
+    self.dec_indent();
     res.push_str(&" ".repeat(self.indent));
     res.push_str("}\n");
     res.into()
@@ -378,8 +356,9 @@ impl Visitor<String> for IRPrinter {
   }
   fn visit_block(&mut self, block: &BlockRef<'_>) -> Option<String> {
     let mut res = String::new();
-    match block.get_pred() {
-      BlockPred::Condition(cond) => {
+    // Scope begins
+    match block.get_kind() {
+      BlockKind::Condition(cond) => {
         res.push_str(&format!(
           "{}if {} {{\n",
           " ".repeat(self.indent),
@@ -387,21 +366,34 @@ impl Visitor<String> for IRPrinter {
         ));
         self.inc_indent();
       }
-      BlockPred::WaitUntil(cond) => {
+      BlockKind::WaitUntil(cond) => {
+        let x = self.indent;
+        let cond = self.dispatch(block.sys, &cond, vec![]).unwrap();
         res.push_str(&format!(
           "{}wait_until {} {{\n",
           " ".repeat(self.indent),
-          cond.to_string(block.sys)
+          cond[x..].to_string()
         ));
         self.inc_indent();
       }
-      BlockPred::Cycle(cycle) => {
+      BlockKind::Cycle(cycle) => {
         res.push_str(&format!("{}cycle {} {{\n", " ".repeat(self.indent), cycle));
         self.inc_indent();
       }
-      BlockPred::None => todo!(),
+      BlockKind::None | BlockKind::Valued(_) => {
+        res.push_str(&format!("{}{{\n", " ".repeat(self.indent)));
+        self.inc_indent();
+      }
     }
-    for elem in block.iter() {
+    let InsertPoint(cur_mod, cur_block, at) = block.sys.get_insert_point();
+    let here = cur_mod == block.get_module().upcast() && cur_block == block.upcast();
+    for (i, elem) in block.iter().enumerate() {
+      if here && at.map_or(false, |x| x == i) {
+        res.push_str(&format!(
+          "{}-----{{Insert Here}}-----\n",
+          " ".repeat(self.indent)
+        ));
+      }
       match elem.get_kind() {
         NodeKind::Expr => {
           let expr = elem.as_ref::<Expr>(block.sys).unwrap();
@@ -416,12 +408,27 @@ impl Visitor<String> for IRPrinter {
         }
       }
     }
-    match block.get_pred() {
-      BlockPred::Condition(_) | BlockPred::WaitUntil(_) | BlockPred::Cycle(_) => {
+    if here && at.is_none() {
+      res.push_str(&format!(
+        "{}-----{{Insert Here}}-----\n",
+        " ".repeat(self.indent)
+      ));
+    }
+    // Scope ends
+    match block.get_kind() {
+      BlockKind::Condition(_) | BlockKind::WaitUntil(_) | BlockKind::Cycle(_) | BlockKind::None => {
         self.dec_indent();
         res.push_str(&format!("{}}}", " ".repeat(self.indent)));
       }
-      BlockPred::None => todo!(),
+      BlockKind::Valued(value) => {
+        res.push_str(&format!(
+          "{}{}\n",
+          " ".repeat(self.indent),
+          value.to_string(block.sys)
+        ));
+        self.dec_indent();
+        res.push_str(&format!("{}}}", " ".repeat(self.indent)));
+      }
     }
     res.into()
   }
