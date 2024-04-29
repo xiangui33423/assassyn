@@ -3,14 +3,12 @@ use eir::{builder::SysBuilder, test_utils};
 
 #[test]
 fn back_pressure() {
-  module_builder!(sub[a:int<32>, b:int<32>][] {
-    a = a.pop();
-    b = b.pop();
+  module_builder!(sub()(a:int<32>, b:int<32>) {
     c = a.sub(b);
     log("sub: {} - {} = {}", a, b, c);
   });
 
-  module_builder!(driver[][lhs, rhs] {
+  module_builder!(driver(lhs, rhs)() {
     cnt = array(int<32>, 1);
     k = cnt[0.int<32>];
     v = k.add(1);
@@ -21,10 +19,9 @@ fn back_pressure() {
   });
 
   module_builder!(
-    lhs[a:int<32>][suber] {
-      v = a.pop();
-      rhs = bind suber { a: v };
-    }.expose[rhs]
+    lhs(suber)(a:int<32>) {
+      rhs = bind suber { a: a };
+    }.expose(rhs)
   );
 
   let mut sys = SysBuilder::new("main");

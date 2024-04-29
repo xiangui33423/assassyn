@@ -1,11 +1,12 @@
 use proc_macro::TokenStream;
 use proc_macro2::Span;
 use quote::{quote, ToTokens};
+use syn::{punctuated::Punctuated, Token};
 
 use crate::ast::{
   self,
   expr::{self, DType, ExprTerm},
-  node::{ArrayAccess, BodyPred, FuncArgs, Statement},
+  node::{ArrayAccess, BodyPred, FuncArgs, PortDecl, Statement},
 };
 
 use eir::ir::data::DataType;
@@ -75,8 +76,35 @@ pub(crate) fn emit_expr_body(expr: &ast::expr::Expr) -> syn::Result<proc_macro2:
       }
       "valid" | "peek" => {
         let method_id = syn::Ident::new(&format!("create_fifo_{}", op), op.span());
-        let a: proc_macro2::TokenStream = emit_expr_term(a)?.into();
-        Ok(quote!(sys.#method_id(#a.clone());))
+        // @were: I am not sure  if this is a temporary hack or a long-term solution
+        // to get compatible with the current implicit FIFO pop.
+        // Before, the ID of the ExprTerm directly refers to the FIFO instance, but now
+        // after the implicit FIFO pop, it refers to a value from the FIFO.
+        // However, when generating a valid, it will typically be used in the wait_until
+        // block before the pop, so we do not worry about "popping before validation".
+        //
+        // This is kinda back-and-forth in the code generator.
+        let fifo_self = match a {
+          ExprTerm::Ident(id) => {
+            let name = id.to_string();
+            quote! {{
+              let module = module.as_ref::<eir::ir::Module>(sys).unwrap();
+              module.get_port_by_name(#name).unwrap_or_else(|| {
+                panic!("Module {} has no port named {}", module.get_name(), #name)
+              }).upcast()
+            }}
+          }
+          _ => {
+            return Err(syn::Error::new(
+              op.span(),
+              "Expected an identifier for valid/peek!",
+            ))
+          }
+        };
+        Ok(quote! {{
+          let fifo = #fifo_self;
+          sys.#method_id(fifo)
+        }})
       }
       _ => Err(syn::Error::new(
         op.span(),
@@ -356,4 +384,67 @@ pub(crate) fn emit_body(body: &ast::node::Body) -> syn::Result<proc_macro2::Toke
     }});
   }
   Ok(res.into())
+}
+
+pub(crate) fn emit_ports(
+  ports: &Punctuated<PortDecl, Token![,]>,
+) -> syn::Result<(
+  proc_macro2::TokenStream,
+  proc_macro2::TokenStream,
+  proc_macro2::TokenStream,
+  proc_macro2::TokenStream,
+)> {
+  let mut port_ids: Punctuated<syn::Ident, Token![,]> = Punctuated::new();
+  let mut port_decls: Punctuated<proc_macro2::TokenStream, Token![,]> = Punctuated::new();
+  let mut port_peeks: Punctuated<proc_macro2::TokenStream, Token![;]> = Punctuated::new();
+  let mut port_pops: Punctuated<proc_macro2::TokenStream, Token![;]> = Punctuated::new();
+  for (i, elem) in ports.iter().enumerate() {
+    let (id, ty) = (elem.id.clone(), elem.ty.clone());
+    // IDs: <id>, <id>, ...
+    port_ids.push(id.clone());
+    port_ids.push_punct(Token![,](id.span()));
+    let err_log = syn::LitStr::new(&format!("Index {} exceed!", i), id.span());
+    // Peek the port instances
+    port_peeks.push(quote! { let #id = module.get_port(#i).expect(#err_log).clone() });
+    port_peeks.push_punct(Token![;](id.span()));
+    // Declarations: <id>: <ty>,
+    let ty: proc_macro2::TokenStream = emit_type(&ty)?.into();
+    port_decls.push(quote! { eir::builder::PortInfo::new(stringify!(#id), #ty) });
+    port_decls.push_punct(Token![,](id.span()));
+    // Pop the port instances
+    port_pops.push(quote! { let #id = sys.create_fifo_pop(#id.clone(), None) });
+    port_pops.push_punct(Token![;](id.span()));
+  }
+  Ok((
+    quote! {#port_ids},
+    quote! {#port_decls},
+    quote! {#port_peeks},
+    quote! {#port_pops},
+  ))
+}
+
+pub(crate) fn emit_rets(
+  x: &Option<Punctuated<syn::Ident, Token![,]>>,
+) -> (proc_macro2::TokenStream, proc_macro2::TokenStream) {
+  if let Some(exposes) = x {
+    // Types: BaseNode(module), BaseNode, BaseNode, ...
+    let mut tys: Punctuated<proc_macro2::TokenStream, Token![,]> = Punctuated::new();
+    tys.push(quote! { eir::ir::node::BaseNode });
+    tys.push_punct(Token![,](Span::call_site()));
+    // Values: module, <id>, <id>, ...
+    let mut vals: Punctuated<syn::Ident, Token![,]> = Punctuated::new();
+    vals.push(syn::Ident::new("module", Span::call_site()));
+    vals.push_punct(Default::default());
+    for elem in exposes.iter() {
+      // Pushing values
+      vals.push(elem.clone());
+      vals.push_punct(Token![,](elem.span()));
+      // Pushing types
+      tys.push(quote! { eir::ir::node::BaseNode });
+      tys.push_punct(Token![,](elem.span()));
+    }
+    (quote! { ( #tys ) }, quote! { ( #vals ) })
+  } else {
+    (quote! { eir::ir::node::BaseNode }, quote! { module })
+  }
 }

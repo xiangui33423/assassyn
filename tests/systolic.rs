@@ -21,9 +21,7 @@ impl ProcElem {
 #[test]
 fn systolic_array() {
   module_builder!(
-    pe[west:int<32>, north:int<32>][east, south] {
-      west = west.pop();
-      north = north.pop();
+    pe(east, south)(west:int<32>, north:int<32>) {
       c = west.mul(north);
       acc = array(int<64>, 1);
       val = acc[0];
@@ -32,7 +30,7 @@ fn systolic_array() {
       acc[0] = mac;
       feast = eager_bind east(west);
       fsouth = eager_bind south(north);
-    }.expose[feast, fsouth, acc]
+    }.expose(feast, fsouth, acc)
   );
 
   let mut sys = SysBuilder::new("systolic_array");
@@ -51,7 +49,7 @@ fn systolic_array() {
   //          [Sink]        [Sink]        [Sink]        [Sink]
 
   // Sink Sentinels
-  module_builder!(sink[v:int<32>][] { _v = v.pop(); });
+  module_builder!(sink()(_v:int<32>) { });
   (1..=4).for_each(|i| {
     pe_array[i][5].pe = sink_builder(&mut sys);
     pe_array[i][5].bound = pe_array[i][5].pe;
@@ -61,11 +59,10 @@ fn systolic_array() {
     pe_array[5][i].bound = pe_array[5][i].pe;
   });
 
-  module_builder!(data_pusher[data: int<32>][dest] {
-    data = data.pop();
+  module_builder!(data_pusher(dest)(data: int<32>) {
     log("pushes {}", data);
     bound = eager_bind dest(data);
-  }.expose[bound]);
+  }.expose(bound));
 
   for i in (1..=4).rev() {
     for j in (1..=4).rev() {
@@ -116,7 +113,7 @@ fn systolic_array() {
 
   // row [[0, 1, 2, 3], [4, 5, 6, 7], [8, 9, 10, 11], [12, 13, 14, 15]]
   // col [[0, 4, 8, 12], [1, 5, 9, 13], [2, 6, 10, 14], [3, 7, 11, 15]]
-  module_builder!(testbench[][col1, col2, col3, col4, row1, row2, row3, row4] {
+  module_builder!(testbench(col1, col2, col3, col4, row1, row2, row3, row4)() {
     cycle 0 {
       // 0 0
       // 0 P P P  P

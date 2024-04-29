@@ -3,33 +3,29 @@ use eir::{builder::SysBuilder, test_utils};
 
 #[test]
 fn eager_bind() {
-  module_builder!(sub[a:int<32>, b:int<32>][] {
-    a  = a.pop();
-    b  = b.pop();
+  module_builder!(sub()(a:int<32>, b:int<32>) {
     c = a.sub(b);
     log("sub: {} - {} = {}", a, b, c);
   });
 
-  module_builder!(driver[][lhs, rhs] {
+  module_builder!(driver(lhs, rhs)() {
     cnt = array(int<32>, 1);
     k = cnt[0.int<32>];
     v = k.add(1);
     cnt[0] = v;
     mul = v.add(v);
-    async lhs { a: mul };
-    async rhs { a: v };
+    async lhs { v: mul };
+    async rhs { v: v };
   });
 
   module_builder!(
-    lhs[a:int<32>][sub] {
-      v = a.pop();
+    lhs(sub)(v:int<32>) {
       bound = eager_bind sub { a: v };
-    }.expose[bound]
+    }.expose(bound)
   );
 
   module_builder!(
-    rhs[a:int<32>][bound] {
-      v = a.pop();
+    rhs(bound)(v:int<32>) {
       _bound = eager_bind bound { b: v };
     }
   );
