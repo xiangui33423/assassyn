@@ -1,8 +1,8 @@
 use std::collections::HashSet;
 
-use crate::builder::SysBuilder;
+use crate::{builder::SysBuilder, ir::ir_printer::IRPrinter};
 
-use super::{node::*, visitor::Visitor, Expr, Module, FIFO};
+use super::{node::*, visitor::Visitor, Expr, Module, Opcode, FIFO};
 
 /// This node defines a def-use relation between the expression nodes.
 /// This is necessary because a node can be used by multiple in other user.
@@ -11,8 +11,8 @@ use super::{node::*, visitor::Visitor, Expr, Module, FIFO};
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Operand {
   pub(crate) key: usize,
-  user: BaseNode,
   def: BaseNode,
+  user: BaseNode,
 }
 
 impl Parented for Operand {
@@ -43,22 +43,18 @@ impl Operand {
 
 impl OperandRef<'_> {
   pub fn get_idx(&self) -> usize {
-    let user = self.user.as_ref::<Expr>(self.sys).unwrap();
-    let mut iter = user.operand_iter();
+    let expr = self.user.as_ref::<Expr>(self.sys).unwrap();
+    let mut iter = expr.operand_iter();
     iter.position(|x| x.get_key() == self.get_key()).unwrap()
   }
 }
 
 impl OperandMut<'_> {
-  pub fn erase_from_expr(&mut self) {
+  pub fn erase_self(&mut self) {
     let idx = self.get().get_idx();
-    let mut user = self
-      .get()
-      .get_user()
-      .clone()
-      .as_mut::<Expr>(self.sys)
-      .unwrap();
-    user.remove_operand(idx);
+    let user = self.get().user;
+    let mut expr = user.as_mut::<Expr>(self.sys).unwrap();
+    expr.remove_operand(idx);
     self.sys.dispose(self.get().upcast());
   }
 }
@@ -108,6 +104,10 @@ impl GatherAllUses {
 
 impl Visitor<()> for GatherAllUses {
   fn visit_expr(&mut self, expr: &ExprRef<'_>) -> Option<()> {
+    if let Opcode::AsyncCall = expr.get_opcode() {
+      let bind = expr.get_operand(0).unwrap().get_value().clone();
+      self.dispatch(expr.sys, &bind, vec![]);
+    }
     for (i, operand) in expr.operand_iter().enumerate() {
       match operand.get_value().get_kind() {
         NodeKind::FIFO => {
@@ -115,7 +115,9 @@ impl Visitor<()> for GatherAllUses {
           if fifo.is_placeholder() && fifo.get_parent().eq(&self.src) {
             if let Ok(module) = self.dst.as_ref::<Module>(expr.sys) {
               let new_value = module.get_port(fifo.idx()).unwrap();
-              self.uses.insert((expr.upcast(), i, Some(new_value)));
+              self
+                .uses
+                .insert((expr.upcast(), i, Some(new_value.upcast())));
             }
           }
         }
@@ -132,6 +134,9 @@ impl Visitor<()> for GatherAllUses {
 
 impl SysBuilder {
   pub(crate) fn remove_user(&mut self, operand: BaseNode) {
+    if operand.is_unknown() {
+      return;
+    }
     let operand_ref = operand.as_ref::<Operand>(self).unwrap();
     let def_value = operand_ref.get_value().clone();
     match def_value.get_kind() {
@@ -152,6 +157,9 @@ impl SysBuilder {
   }
 
   pub(crate) fn add_user(&mut self, operand: BaseNode) {
+    if operand.is_unknown() {
+      return;
+    }
     let operand_ref = operand.as_ref::<Operand>(self).unwrap();
     let value = operand_ref.get_value().clone();
     match value.get_kind() {
@@ -174,11 +182,20 @@ impl SysBuilder {
   // TODO(@were): I strongly believe we can have a BFS based gatherer to have better performance.
   pub fn replace_all_uses_with(&mut self, src: BaseNode, dst: BaseNode) {
     let mut gather = GatherAllUses::new(src, dst);
+    eprintln!(
+      "replace {}",
+      IRPrinter::new(false).dispatch(self, &src, vec![]).unwrap()
+    );
+    // eprintln!("by {}", dst.to_string(self));
     for m in self.module_iter() {
       gather.visit_module(&m);
     }
     for (expr, i, new_value) in gather.uses {
       let new_value = new_value.map_or(dst.clone(), |x| x);
+      eprintln!(
+        "use: {}",
+        IRPrinter::new(false).dispatch(self, &expr, vec![]).unwrap()
+      );
       let mut expr_mut = expr.as_mut::<Expr>(self).unwrap();
       expr_mut.set_operand(i, new_value);
     }

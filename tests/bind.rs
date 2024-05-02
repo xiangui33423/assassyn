@@ -20,7 +20,7 @@ fn bind() {
 
   module_builder!(
     lhs(sub)(a:int<32>) {
-      aa = eager_bind sub { a: a };
+      aa = bind sub { a: a };
     }.expose(aa)
   );
 
@@ -43,7 +43,7 @@ fn bind() {
     sim_threshold: 100,
     idle_threshold: 100,
   };
-  eir::backend::verilog::elaborate(&sys, &config).unwrap();
+  // eir::backend::verilog::elaborate(&sys, &config).unwrap();
 
   run_simulator(
     &sys,

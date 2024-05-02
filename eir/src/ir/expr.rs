@@ -1,5 +1,7 @@
 use std::collections::HashSet;
 
+use expr::{ir_printer::IRPrinter, visitor::Visitor};
+
 use crate::ir::node::IsElement;
 use crate::ir::*;
 
@@ -9,6 +11,13 @@ use self::{
 };
 
 use super::{block::Block, node::BaseNode};
+
+#[derive(Clone, Debug, Eq, PartialEq, Copy, Hash)]
+pub enum BindKind {
+  KVBind,
+  Sequential,
+  Unknown,
+}
 
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 pub enum Opcode {
@@ -34,11 +43,12 @@ pub enum Opcode {
   // Triary operations
   Select,
   // Eventual operations
+  Bind(BindKind),
   FIFOPush,
   FIFOPop,
   FIFOPeek,
   FIFOValid,
-  Trigger,
+  AsyncCall,
   // Other synthesizable operations
   Slice,
   // Level-2 syntax sugar, will be re-written in synthesizable operations
@@ -91,7 +101,7 @@ impl ToString for Opcode {
       Opcode::Flip => "!".into(),
       Opcode::Load => "load".into(),
       Opcode::Store => "store".into(),
-      Opcode::Trigger => "trigger".into(),
+      Opcode::AsyncCall => "trigger".into(),
       Opcode::SpinTrigger => "wait_until".into(),
       Opcode::FIFOPush => "push".into(),
       Opcode::FIFOPop => "pop".into(),
@@ -100,6 +110,7 @@ impl ToString for Opcode {
       Opcode::Log => "log".into(),
       Opcode::Slice => "slice".into(),
       Opcode::Select => "select".into(),
+      Opcode::Bind(_) => "".into(),
     }
   }
 }
@@ -109,7 +120,7 @@ pub struct Expr {
   parent: BaseNode,
   dtype: DataType,
   opcode: Opcode,
-  operands: Vec<BaseNode>,
+  pub(crate) operands: Vec<BaseNode>,
   pub(crate) user_set: HashSet<BaseNode>,
 }
 
@@ -191,6 +202,20 @@ impl ExprMut<'_> {
 
   /// Erase the expression from its parent block
   pub fn erase_from_parent(&mut self) {
+    eprintln!(
+      "erasing {}",
+      IRPrinter::new(false)
+        .dispatch(self.sys, &self.get().upcast(), vec![])
+        .unwrap()
+    );
+    for elem in self.get().users().iter() {
+      let operand = elem.as_ref::<Operand>(self.sys).unwrap();
+      let user = IRPrinter::new(false)
+        .dispatch(self.sys, operand.get_user(), vec![])
+        .unwrap();
+      eprintln!("user: {} {:?}", elem.to_string(self.sys), user);
+    }
+
     assert!(self.get().users().is_empty());
     let parent = self.get().get_parent();
     let expr = self.get().upcast();
@@ -241,6 +266,8 @@ impl ExprMut<'_> {
     }
   }
 
+  /// Set the i-th operand to the given value.
+  /// NOTE: Just the raw value is given, not the operand wrapper.
   pub fn set_operand(&mut self, i: usize, value: BaseNode) {
     self.set_operand_impl(i, Some(value));
   }

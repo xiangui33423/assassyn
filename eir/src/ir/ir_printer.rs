@@ -243,16 +243,11 @@ impl Visitor<String> for IRPrinter {
             expr.get_key()
           )
         }
-        Opcode::Trigger => {
-          let mut res = format!(
-            "async call {}, bundle [",
+        Opcode::AsyncCall => {
+          format!(
+            "async_call {}",
             expr.get_operand(0).unwrap().get_value().to_string(expr.sys)
-          );
-          for op in expr.operand_iter().skip(1) {
-            res.push_str(&format!("_{}, ", op.get_value().get_key()));
-          }
-          res.push(']');
-          res
+          )
         }
         Opcode::SpinTrigger => {
           let mut res = String::new();
@@ -350,21 +345,60 @@ impl Visitor<String> for IRPrinter {
           );
           res
         }
+        Opcode::Bind(_) => {
+          let (callee, arg_n) = {
+            let n = expr.get_num_operands() - 1;
+            (expr.get_operand(n).unwrap().get_value().clone(), n)
+          };
+          let arg_list = expr
+            .operand_iter()
+            .take(arg_n)
+            .enumerate()
+            .map(|(i, v)| {
+              let v = if v.get_value().is_unknown() {
+                "None".to_string()
+              } else {
+                v.get_value().to_string(expr.sys)
+              };
+              let arg = match callee.get_kind() {
+                NodeKind::Module => {
+                  let name = callee
+                    .as_ref::<Module>(expr.sys)
+                    .unwrap()
+                    .get_port(i)
+                    .unwrap()
+                    .get_name()
+                    .to_string();
+                  format!("{}:", name)
+                }
+                _ => format!("arg{}", i),
+              };
+              format!("{} {}", arg, v)
+            })
+            .collect::<Vec<String>>()
+            .join(", ");
+          let module_name = match callee.get_kind() {
+            NodeKind::Module => callee
+              .as_ref::<Module>(expr.sys)
+              .unwrap()
+              .get_name()
+              .to_string(),
+            _ => callee.to_string(expr.sys),
+          };
+          format!(
+            "_{} = bind {} {{ {} }}",
+            expr.get_key(),
+            module_name,
+            arg_list
+          )
+          .into()
+        }
         _ => {
           panic!("Unimplemented opcode: {:?}", expr.get_opcode());
         }
       }
     };
     format!("{}{}", " ".repeat(self.indent), res).into()
-  }
-  fn visit_bind(&mut self, bind: &BindRef<'_>) -> Option<String> {
-    let bound = bind
-      .get_bound()
-      .iter()
-      .map(|(k, v)| format!("{}: {}", k, v.to_string(bind.sys)))
-      .collect::<Vec<String>>()
-      .join(", ");
-    format!("{} {{ {} }}", bind.get_callee().to_string(bind.sys), bound).into()
   }
   fn visit_block(&mut self, block: &BlockRef<'_>) -> Option<String> {
     let mut res = String::new();

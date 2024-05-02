@@ -10,6 +10,8 @@ use crate::{
   ir::{module::memory::parse_memory_module_name, node::*, visitor::Visitor, *},
 };
 
+use self::bind::get_bind_callee;
+
 fn namify(name: &str) -> String {
   name.replace(".", "_")
 }
@@ -296,7 +298,12 @@ impl<'a> VerilogDumper<'a> {
       let module_name = namify(module.get_name());
       res.push_str(format!("// {} trigger\n", module_name).as_str());
       if module_name != "driver" && module_name != "testbench" {
-        for driver in self.trigger_drivers.get(&module_name).unwrap().into_iter() {
+        for driver in self
+          .trigger_drivers
+          .get(&module_name)
+          .unwrap_or_else(|| panic!("{} not found!", module_name))
+          .into_iter()
+        {
           res.push_str(
             format!(
               "logic {}_driver_{}_trigger_push_valid;\n",
@@ -615,13 +622,10 @@ fn get_triggered_modules(node: &BaseNode, sys: &SysBuilder) -> Vec<String> {
     }
     NodeKind::Expr => {
       let expr = node.as_ref::<Expr>(sys).unwrap();
-      if expr.get_opcode() == Opcode::Trigger {
-        let triggered_module = expr
-          .get_operand(0)
-          .unwrap()
-          .get_value()
-          .as_ref::<Module>(sys)
-          .unwrap();
+      if expr.get_opcode() == Opcode::AsyncCall {
+        let triggered_module =
+          get_bind_callee(sys, expr.get_operand(0).unwrap().get_value().clone());
+        let triggered_module = triggered_module.as_ref::<Module>(sys).unwrap();
         triggered_modules.push(namify(triggered_module.get_name()));
       }
     }
@@ -888,13 +892,13 @@ impl<'a> Visitor<String> for VerilogDumper<'a> {
             let fifo_name = namify(fifo.get_name());
             rdata_fifo = Some(format!("{}_{}", fifo_module, fifo_name));
           }
-          Opcode::Trigger => {
-            let module = expr
-              .get_operand(0)
-              .unwrap()
-              .get_value()
-              .as_ref::<Module>(self.sys)
-              .unwrap();
+          Opcode::AsyncCall => {
+            let module = {
+              let operand = expr.get_operand(0).unwrap();
+              let bind = operand.get_value();
+              let module = get_bind_callee(expr.sys, bind.clone());
+              module.as_ref::<Module>(expr.sys).unwrap()
+            };
             rdata_module = Some(namify(module.get_name()));
           }
           _ => panic!("Unexpected expr of {:?} in memory body", expr.get_opcode()),
@@ -1327,13 +1331,9 @@ impl<'a> Visitor<String> for VerilogDumper<'a> {
           ))
         }
 
-        Opcode::Trigger => {
-          let module = expr
-            .get_operand(0)
-            .unwrap()
-            .get_value()
-            .as_ref::<Module>(self.sys)
-            .unwrap();
+        Opcode::AsyncCall => {
+          let module = get_bind_callee(self.sys, expr.get_operand(0).unwrap().get_value().clone());
+          let module = module.as_ref::<Module>(self.sys).unwrap();
           let module_name = namify(module.get_name());
           match self.trigger_drivers.get_mut(&module_name) {
             Some(tds) => {
