@@ -1,12 +1,13 @@
 use std::{
   collections::HashMap,
-  fs::{self, File},
+  fs::{self, File, OpenOptions},
   io::Write,
   path::Path,
   process::Command,
 };
 
 use proc_macro2::Span;
+use quote::quote;
 use syn::Ident;
 
 use crate::{
@@ -59,6 +60,27 @@ macro_rules! dump_ref {
 
 struct NodeRefDumper;
 
+fn int_imm_dumper_impl(ty: &DataType, value: u64) -> String {
+  if ty.get_bits() == 1 {
+    return if value == 0 {
+      "false".to_string()
+    } else {
+      "true".to_string()
+    };
+  }
+  if ty.get_bits() <= 64 {
+    format!("{}{}", value, dtype_to_rust_type(ty))
+  } else {
+    let scalar_ty = if ty.is_signed() { "u64" } else { "i64" };
+    format!(
+      "ValueCastTo::<{}>::cast(&({} as {}))",
+      dtype_to_rust_type(ty),
+      value,
+      scalar_ty
+    )
+  }
+}
+
 impl Visitor<String> for NodeRefDumper {
   fn dispatch(&mut self, sys: &SysBuilder, node: &BaseNode, _: Vec<NodeKind>) -> Option<String> {
     match node.get_kind() {
@@ -69,11 +91,7 @@ impl Visitor<String> for NodeRefDumper {
       NodeKind::FIFO => fifo_name!(node.as_ref::<FIFO>(sys).unwrap()).into(),
       NodeKind::IntImm => {
         let int_imm = node.as_ref::<IntImm>(sys).unwrap();
-        Some(format!(
-          "({} as {})",
-          int_imm.get_value(),
-          dtype_to_rust_type(&int_imm.dtype())
-        ))
+        Some(int_imm_dumper_impl(&int_imm.dtype(), int_imm.get_value()))
       }
       NodeKind::StrImm => {
         let str_imm = node.as_ref::<StrImm>(sys).unwrap();
@@ -106,7 +124,7 @@ impl Visitor<String> for ElaborateModule<'_, '_> {
     ));
     // Dump the function signature.
     // First, some common function parameters are dumped.
-    res.push_str(&format!("fn {}(\n", namify(module.get_name())));
+    res.push_str(&format!("pub fn {}(\n", namify(module.get_name())));
     res.push_str("  stamp: usize,\n");
     res.push_str("  q: &mut BinaryHeap<Reverse<Event>>,\n");
     for port in module.port_iter() {
@@ -246,12 +264,12 @@ impl Visitor<String> for ElaborateModule<'_, '_> {
       let ty = expr.dtype();
       let ty = dtype_to_rust_type(&ty);
       format!(
-        "({} as {}) {} ({} as {})",
+        "ValueCastTo::<{}>::cast(&{}) {} ValueCastTo::<{}>::cast(&{})",
+        ty,
         dump_ref!(self.sys, &expr.get_operand(0).unwrap().get_value()),
-        ty,
         expr.get_opcode().to_string(),
-        dump_ref!(self.sys, &expr.get_operand(1).unwrap().get_value()),
         ty,
+        dump_ref!(self.sys, &expr.get_operand(1).unwrap().get_value()),
       )
     } else if expr.get_opcode().is_unary() {
       format!(
@@ -276,7 +294,7 @@ impl Visitor<String> for ElaborateModule<'_, '_> {
             .as_ref::<ArrayPtr>(expr.sys)
             .unwrap();
           format!(
-            "{}[{} as usize]",
+            "{}[{} as usize].clone()",
             NodeRefDumper
               .dispatch(expr.sys, &handle.get_array(), vec![])
               .unwrap(),
@@ -389,7 +407,8 @@ impl Visitor<String> for ElaborateModule<'_, '_> {
             quote::quote! {
               q.push(Reverse(Event{
                 stamp: stamp + 50,
-                kind: EventKind::#fifo_push((EventKind::#module_writer.into(), #slab_idx, #value))
+                kind: EventKind::#fifo_push(
+                  (EventKind::#module_writer.into(), #slab_idx, #value.clone()))
               }))
             }
             .to_string()
@@ -414,36 +433,54 @@ impl Visitor<String> for ElaborateModule<'_, '_> {
         }
         Opcode::Slice => {
           let a = dump_ref!(self.sys, &expr.get_operand(0).unwrap().get_value());
-          let l = dump_ref!(self.sys, &expr.get_operand(1).unwrap().get_value());
-          let r = dump_ref!(self.sys, &expr.get_operand(2).unwrap().get_value());
-          let bits = {
-            let dtype = expr
-              .get_operand(0)
-              .unwrap()
-              .get_value()
-              .get_dtype(self.sys)
-              .unwrap();
-            dtype.get_bits()
-          };
+          let l = expr
+            .get_operand(1)
+            .unwrap()
+            .get_value()
+            .as_ref::<IntImm>(self.sys)
+            .expect("Only const slice supported")
+            .get_value();
+          let r = expr
+            .get_operand(2)
+            .unwrap()
+            .get_value()
+            .as_ref::<IntImm>(self.sys)
+            .expect("Only const slice supported")
+            .get_value();
           format!(
             "{{
-            let a = {} as u64;
-            let l = {} as usize;
-            let r = {} as usize;
-            let len = r - l + 1;
-            let mask = !0 >> ({} - len);
-            ((a >> l) & mask) {}
-          }}",
+              let a = ValueCastTo::<BigUint>::cast(&{});
+              let mask = BigUint::parse_bytes(\"{}\", 2).unwrap();
+              ValueCastTo::<{}>::cast((a >> {}) & mask)
+            }}",
             a,
+            "1".repeat((r - l + 1) as usize),
             l,
-            r,
-            bits,
-            if expr.dtype().get_bits() == 1 {
-              "!= 0".to_string()
-            } else {
-              format!("as {}", dtype_to_rust_type(&expr.dtype()))
-            }
+            dtype_to_rust_type(&expr.dtype()),
           )
+        }
+        Opcode::Concat => {
+          let a = dump_ref!(self.sys, &expr.get_operand(0).unwrap().get_value());
+          let b = dump_ref!(self.sys, &expr.get_operand(1).unwrap().get_value());
+          let b_bits = expr
+            .get_operand(1)
+            .unwrap()
+            .get_value()
+            .get_dtype(expr.sys)
+            .unwrap()
+            .get_bits();
+          format! {
+            "{{
+              let a = ValueCastTo::<BigUint>::cast(&{});
+              let b = ValueCastTo::<BigUint>::cast(&{});
+              let c = (a << {}) | b;
+              ValueCastTo::<{}>::cast(&c)
+            }}",
+            a,
+            b,
+            b_bits,
+            dtype_to_rust_type(&expr.dtype()),
+          }
         }
         Opcode::Select => {
           let cond = dump_ref!(self.sys, &expr.get_operand(0).unwrap().get_value());
@@ -467,13 +504,17 @@ impl Visitor<String> for ElaborateModule<'_, '_> {
           {
             // perform zero extension
             format!(
-              "{} as {} as {}",
-              a,
+              "ValueCastTo::<{}>::cast(ValueCastTo::<{}>::cast(&{}))",
+              dtype_to_rust_type(&dest_dtype),
               dtype_to_rust_type(&src_dtype).replace("i", "u"),
-              dtype_to_rust_type(&dest_dtype)
+              a,
             )
           } else {
-            format!("{} as {}", a, dtype_to_rust_type(&dest_dtype))
+            format!(
+              "ValueCastTo::<{}>::cast(&{})",
+              dtype_to_rust_type(&dest_dtype),
+              a
+            )
           }
         }
         Opcode::Sext => {
@@ -481,7 +522,11 @@ impl Visitor<String> for ElaborateModule<'_, '_> {
           let src = src_ref.get_value();
           let dest_dtype = expr.dtype();
           let a = dump_ref!(self.sys, src);
-          format!("{} as {}", a, dtype_to_rust_type(&dest_dtype))
+          format!(
+            "ValueCastTo::<{}>::cast(&{})",
+            dtype_to_rust_type(&dest_dtype),
+            a
+          )
         }
         Opcode::Bind(_) => {
           let callee = {
@@ -518,9 +563,9 @@ impl Visitor<String> for ElaborateModule<'_, '_> {
 
   fn visit_int_imm(&mut self, int_imm: &IntImmRef<'_>) -> Option<String> {
     format!(
-      "({} as {})",
+      "ValueCastTo::<{}>::cast(&{})",
+      dtype_to_rust_type(&int_imm.dtype()),
       int_imm.get_value(),
-      dtype_to_rust_type(&int_imm.dtype())
     )
     .into()
   }
@@ -613,16 +658,131 @@ impl Visitor<String> for ElaborateModule<'_, '_> {
 
 fn dump_runtime(sys: &SysBuilder, config: &Config) -> (String, HashMap<BaseNode, usize>) {
   let mut res = String::new();
-  // Dump the helper function of cycles.
-  res.push_str("// Simulation runtime.\n");
+  res.push_str(
+    &quote! {
+      use std::collections::VecDeque;
+      use std::collections::BinaryHeap;
+      use std::cmp::{Ord, Reverse};
+      use num_bigint::{BigInt, BigUint, ToBigInt, ToBigUint};
+    }
+    .to_string(),
+  );
+
+  for module in sys.module_iter() {
+    res.push_str(&format!(
+      "use super::modules::{};\n",
+      namify(module.get_name())
+    ));
+  }
+
   res.push_str(
     &quote::quote! {
-      fn cyclize(stamp: usize) -> String {
+      pub fn cyclize(stamp: usize) -> String {
         format!("Cycle @{}.{:02}", stamp / 100, stamp % 100)
+      }
+      pub trait ValueCastTo<T> {
+        fn cast(&self) -> T;
       }
     }
     .to_string(),
   );
+  res.push_str("impl ValueCastTo<bool> for bool { fn cast(&self) -> bool { self.clone() } }\n");
+
+  let bigints = ["BigInt", "BigUint"];
+  for i in 0..2 {
+    let bigint = bigints[i];
+    let other = bigints[1 - i];
+    res.push_str(&format!(
+      "impl ValueCastTo<{}> for {} {{ fn cast(&self) -> {} {{ self.clone() }} }}\n",
+      bigint, bigint, bigint
+    ));
+    res.push_str(&format!(
+      "impl ValueCastTo<{}> for {} {{ fn cast(&self) -> {} {{ self.to_{}().unwrap() }} }}\n",
+      other,
+      bigint,
+      other,
+      other.to_lowercase()
+    ));
+    res.push_str(&format!(
+      "impl ValueCastTo<{}> for bool {{ fn cast(&self) -> {} {{
+        if *self {{ 1.to_{}().unwrap() }} else {{ 0.to_{}().unwrap() }}
+      }} }}\n",
+      bigint,
+      bigint,
+      bigint.to_lowercase(),
+      bigint.to_lowercase()
+    ));
+    res.push_str(&format!(
+      "impl ValueCastTo<bool> for {} {{ fn cast(&self) -> bool {{
+        !self.eq(&0.to_{}().unwrap())
+      }} }}\n",
+      bigint,
+      bigint.to_lowercase()
+    ));
+  }
+
+  // Dump a template based data cast so that big integers are unified in.
+  for sign_i in 0..=1 {
+    for i in 3..7 {
+      let src_ty = format!("{}{}", ['u', 'i'][sign_i], 1 << i);
+      res.push_str(&format!(
+        "impl ValueCastTo<bool> for {} {{ fn cast(&self) -> bool {{ *self != 0 }} }}\n",
+        src_ty
+      ));
+      res.push_str(&format!(
+        "impl ValueCastTo<{}> for bool {{
+            fn cast(&self) -> {} {{ if *self {{ 1 }} else {{ 0 }} }}
+          }}\n",
+        src_ty, src_ty
+      ));
+      for idx in 0..2 {
+        let bigint = bigints[idx];
+        res.push_str(&format!(
+          "impl ValueCastTo<{}> for {} {{ fn cast(&self) -> {} {{ self.to_{}().unwrap() }} }}\n",
+          bigint,
+          src_ty,
+          bigint,
+          bigint.to_lowercase()
+        ));
+      }
+      res.push_str(&format!(
+        "impl ValueCastTo<{}> for BigInt {{
+            fn cast(&self) -> {} {{
+              let (sign, data) = self.to_u64_digits();
+              match sign {{
+                num_bigint::Sign::Plus => data[0] as {},
+                num_bigint::Sign::Minus => ((!data[0] + 1) & ({}::MAX as u64)) as {},
+                num_bigint::Sign::NoSign => data[0] as {},
+              }}
+            }}
+          }}\n",
+        src_ty, src_ty, src_ty, src_ty, src_ty, src_ty
+      ));
+      res.push_str(&format!(
+        "impl ValueCastTo<{}> for BigUint {{
+            fn cast(&self) -> {} {{ self.to_u64_digits()[0] as {} }}
+          }}\n",
+        src_ty, src_ty, src_ty
+      ));
+
+      for sign_j in 0..=1 {
+        for j in 3..7 {
+          let dst_ty = format!("{}{}", ['u', 'i'][sign_j], 1 << j);
+          if i == j && sign_i == sign_j {
+            res.push_str(&format!(
+              "impl ValueCastTo<{}> for {} {{ fn cast(&self) -> {} {{ self.clone() }} }}\n",
+              dst_ty, src_ty, dst_ty
+            ));
+          } else {
+            res.push_str(&format!(
+              "impl ValueCastTo<{}> for {} {{ fn cast(&self) -> {} {{ *self as {} }} }}\n",
+              dst_ty, src_ty, dst_ty, dst_ty
+            ));
+          }
+        }
+      }
+    }
+  }
   res.push('\n');
 
   // Dump the event enum. Each event corresponds to a module.
@@ -639,7 +799,7 @@ fn dump_runtime(sys: &SysBuilder, config: &Config) -> (String, HashMap<BaseNode,
   //   None
   // }
   res.push_str("#[derive(Clone, Debug, Eq, PartialEq)]\n");
-  res.push_str("enum EventKind {\n");
+  res.push_str("pub enum EventKind {\n");
   for module in sys.module_iter() {
     res.push_str(&format!(
       "  Module{},\n",
@@ -647,7 +807,8 @@ fn dump_runtime(sys: &SysBuilder, config: &Config) -> (String, HashMap<BaseNode,
     ));
   }
   let array_types = analysis::types::array_types_used(sys);
-  for aty in array_types.iter() {
+  for (_, dtypes) in array_types.iter() {
+    let aty = dtypes.iter().next().unwrap();
     let (scalar_ty, size) = unwrap_array_ty(aty);
     let scalar_str = dtype_to_rust_type(&scalar_ty);
     let array_str = array_ty_to_id(&scalar_ty, size);
@@ -657,7 +818,8 @@ fn dump_runtime(sys: &SysBuilder, config: &Config) -> (String, HashMap<BaseNode,
     ));
   }
   let fifo_types = analysis::types::fifo_types_used(sys);
-  for fty in fifo_types.iter() {
+  for (_, dtypes) in fifo_types.iter() {
+    let fty = dtypes.iter().next().unwrap();
     let ty = dtype_to_rust_type(&fty);
     res.push_str(&format!(
       "  FIFO{}Push((Box<EventKind>, usize, {})),\n",
@@ -680,13 +842,15 @@ fn dump_runtime(sys: &SysBuilder, config: &Config) -> (String, HashMap<BaseNode,
     .to_string(),
   );
   res.push_str("\n\nfn is_push(&self) -> bool { match self {\n");
-  for fty in fifo_types.iter() {
+  for (_, dtypes) in fifo_types.iter() {
+    let fty = dtypes.iter().next().unwrap();
     let ty = dtype_to_rust_type(&fty);
     res.push_str(&format!("  EventKind::FIFO{}Push(_) => true,\n", ty,));
   }
   res.push_str("_ => false, }}\n\n");
   res.push_str("fn is_pop(&self) -> bool { match self {\n");
-  for fty in fifo_types.iter() {
+  for (_, dtypes) in fifo_types.iter() {
+    let fty = dtypes.iter().next().unwrap();
     let ty = dtype_to_rust_type(&fty);
     res.push_str(&format!("  EventKind::FIFO{}Pop(_) => true,\n", ty,));
   }
@@ -694,8 +858,9 @@ fn dump_runtime(sys: &SysBuilder, config: &Config) -> (String, HashMap<BaseNode,
   res.push('}');
 
   // Dump the universal set of data types used in this simulation.
-  res.push_str("enum DataSlab {");
-  for array in array_types.iter() {
+  res.push_str("pub enum DataSlab {");
+  for (_, dtypes) in array_types.iter() {
+    let array = dtypes.iter().next().unwrap();
     let (scalar_ty, size) = unwrap_array_ty(array);
     res.push_str(&format!(
       "  Array{}(Box<{}>),\n",
@@ -703,7 +868,8 @@ fn dump_runtime(sys: &SysBuilder, config: &Config) -> (String, HashMap<BaseNode,
       dtype_to_rust_type(&array),
     ));
   }
-  for fifo in fifo_types.iter() {
+  for (_, dtypes) in fifo_types.iter() {
+    let fifo = dtypes.iter().next().unwrap();
     res.push_str(&format!(
       "  FIFO{}(Box<VecDeque<{}>>),\n",
       dtype_to_rust_type(&fifo),
@@ -714,20 +880,20 @@ fn dump_runtime(sys: &SysBuilder, config: &Config) -> (String, HashMap<BaseNode,
   // Dump the slab entry struct.
   res.push_str(
     &quote::quote! {
-      struct LastOperation {
-        operation: Box<EventKind>,
-        stamp: usize,
+      pub struct LastOperation {
+        pub operation: Box<EventKind>,
+        pub stamp: usize,
       }
-      struct SlabEntry {
-        payload: DataSlab,
-        last_written: LastOperation,
+      pub struct SlabEntry {
+        pub payload: DataSlab,
+        pub last_written: LastOperation,
       }
       impl LastOperation {
         fn update(&mut self, operation: Box<EventKind>, stamp: usize) {
           self.operation = operation;
           self.stamp = stamp;
         }
-        fn ok(&mut self, operation: Box<EventKind>, stamp: usize) {
+        pub fn ok(&mut self, operation: Box<EventKind>, stamp: usize) {
           if self.stamp == stamp {
             if (self.operation.is_none() && self.operation.is_none()) ||
                (self.operation.is_push() && operation.as_ref().is_pop()) ||
@@ -743,7 +909,7 @@ fn dump_runtime(sys: &SysBuilder, config: &Config) -> (String, HashMap<BaseNode,
           }
         }
       }
-      trait UnwrapSlab {
+      pub trait UnwrapSlab {
         fn unwrap(entry: &SlabEntry) -> &Self;
         fn unwrap_mut(entry: &mut SlabEntry) -> &mut Self;
       }
@@ -762,9 +928,9 @@ fn dump_runtime(sys: &SysBuilder, config: &Config) -> (String, HashMap<BaseNode,
   res.push_str(
     &quote::quote! {
       #[derive(Clone, Debug, PartialEq, Eq)]
-      struct Event {
-        stamp: usize,
-        kind: EventKind,
+      pub struct Event {
+        pub stamp: usize,
+        pub kind: EventKind,
       }
       impl std::cmp::Ord for Event {
         fn cmp(&self, other: &Self) -> std::cmp::Ordering {
@@ -808,7 +974,8 @@ macro_rules! impl_unwrap_slab {
 }",
   );
 
-  for array in array_types.iter() {
+  for (_, dtypes) in array_types.iter() {
+    let array = dtypes.iter().next().unwrap();
     let (scalar_ty, size) = unwrap_array_ty(array);
     let aid = array_ty_to_id(&scalar_ty, size);
     let scalar_ty = dtype_to_rust_type(&scalar_ty);
@@ -818,7 +985,8 @@ macro_rules! impl_unwrap_slab {
     ));
   }
 
-  for fifo in fifo_types.iter() {
+  for (_, dtypes) in fifo_types.iter() {
+    let fifo = dtypes.iter().next().unwrap();
     let ty = dtype_to_rust_type(fifo);
     res.push_str(&format!(
       "impl_unwrap_slab!(VecDeque<{}>, FIFO{});\n",
@@ -828,7 +996,7 @@ macro_rules! impl_unwrap_slab {
 
   // TODO(@were): Make all arguments of the modules FIFO channels.
   // TODO(@were): Profile the maxium size of all the FIFO channels.
-  res.push_str("fn main() {\n");
+  res.push_str("pub fn simulate() {\n");
   res.push_str("  // The global time stamp\n");
   res.push_str("  let mut stamp: usize = 0;\n");
   res.push_str("  // Count the consecutive cycles idled\n");
@@ -838,18 +1006,21 @@ macro_rules! impl_unwrap_slab {
   let mut slab_cache: HashMap<BaseNode, usize> = HashMap::new();
   for array in sys.array_iter() {
     let (scalar_ty, size) = unwrap_array_ty(&array.dtype());
-    let scalar_str = dtype_to_rust_type(&scalar_ty);
     let aty_id = Ident::new(
       &format!("Array{}", array_ty_to_id(&scalar_ty, size)),
       Span::call_site(),
     );
-    let init_scalar = if scalar_ty.get_bits() == 1 {
-      "false".into()
+    let initializer = if let Some(init) = array.get_initializer() {
+      let list = init
+        .iter()
+        .map(|x| dump_ref!(sys, x))
+        .collect::<Vec<String>>()
+        .join(", ");
+      format!("[{}]", list)
     } else {
-      format!("0 as {}", scalar_str)
-    }
-    .parse::<proc_macro2::TokenStream>()
-    .unwrap();
+      format!("[{}; {}]", int_imm_dumper_impl(&scalar_ty, 0), size)
+    };
+    let initializer = initializer.parse::<proc_macro2::TokenStream>().unwrap();
     res.push_str(&format!(
       "  // {} -> {}\n",
       slab_cache.len(),
@@ -858,7 +1029,7 @@ macro_rules! impl_unwrap_slab {
     res.push_str(
       &quote::quote! {
         SlabEntry {
-          payload: DataSlab::#aty_id(Box::new([#init_scalar; #size])),
+          payload: DataSlab::#aty_id(Box::new(#initializer)),
           last_written: LastOperation {
             operation: EventKind::None.into(),
             stamp: 0
@@ -984,7 +1155,7 @@ macro_rules! impl_unwrap_slab {
     }
     .to_string(),
   );
-  res.push_str("    match event.0.kind {\n");
+  res.push_str("    match &event.0.kind {\n");
   for module in sys.module_iter() {
     let module_eventkind = &format!("Module{}", camelize(&namify(module.get_name())));
     res.push_str(&format!("      EventKind::{} => {{\n", module_eventkind));
@@ -1051,7 +1222,8 @@ macro_rules! impl_unwrap_slab {
       res.push_str("idled += 1; stamp = event.0.stamp; }\n");
     }
   }
-  for aty in array_types.iter() {
+  for (_, dtypes) in array_types.iter() {
+    let aty = dtypes.iter().next().unwrap();
     let (scalar_ty, size) = unwrap_array_ty(aty);
     let aid = array_ty_to_id(&scalar_ty, size);
     let array_write = syn::Ident::new(&format!("Array{}Write", aid), Span::call_site());
@@ -1061,7 +1233,13 @@ macro_rules! impl_unwrap_slab {
     res.push_str(
       &quote::quote! {
         EventKind::#array_write((_, slab_idx, idx, value)) => {
+          let slab_idx = *slab_idx;
+          let idx = *idx;
           data_slab[slab_idx].last_written.ok(event.0.kind.into(), event.0.stamp);
+          let value = match data_slab[slab_idx].last_written.operation.as_ref() {
+            EventKind::#array_write((_, _, _, value)) => value.clone(),
+            _ => panic!("Invalid last written operation"),
+          };
           data_slab[slab_idx].unwrap_payload_mut::<[#scalar_ty; #size]>()[idx] = value;
           stamp = event.0.stamp;
         }
@@ -1069,7 +1247,8 @@ macro_rules! impl_unwrap_slab {
       .to_string(),
     );
   }
-  for fifo_scalar_ty in fifo_types.iter() {
+  for (_, dtypes) in fifo_types.iter() {
+    let fifo_scalar_ty = dtypes.iter().next().unwrap();
     let ty = dtype_to_rust_type(fifo_scalar_ty);
     let fifo_push_event = syn::Ident::new(&format!("FIFO{}Push", ty), Span::call_site());
     let fifo_pop_event = syn::Ident::new(&format!("FIFO{}Pop", ty), Span::call_site());
@@ -1079,13 +1258,14 @@ macro_rules! impl_unwrap_slab {
     res.push_str(
       &quote::quote! {
         EventKind::#fifo_push_event((_, slab_idx, value)) => {
-          data_slab[slab_idx].last_written.ok(event.0.kind.into(), event.0.stamp);
-          data_slab[slab_idx].unwrap_payload_mut::<VecDeque<#ty>>().push_back(value);
+          let value = value.clone();
+          data_slab[*slab_idx].last_written.ok(event.0.kind.clone().into(), event.0.stamp);
+          data_slab[*slab_idx].unwrap_payload_mut::<VecDeque<#ty>>().push_back(value);
           stamp = event.0.stamp;
         }
         EventKind::#fifo_pop_event((_, slab_idx)) => {
-          data_slab[slab_idx].last_written.ok(event.0.kind.into(), event.0.stamp);
-          data_slab[slab_idx].unwrap_payload_mut::<VecDeque<#ty>>().pop_front();
+          data_slab[*slab_idx].last_written.ok(event.0.kind.clone().into(), event.0.stamp);
+          data_slab[*slab_idx].unwrap_payload_mut::<VecDeque<#ty>>().pop_front();
           stamp = event.0.stamp;
         }
       }
@@ -1110,11 +1290,22 @@ macro_rules! impl_unwrap_slab {
   (res, slab_cache)
 }
 
-fn dump_module(
+fn dump_modules(
   sys: &SysBuilder,
   fd: &mut File,
   slab_cache: &HashMap<BaseNode, usize>,
 ) -> Result<(), std::io::Error> {
+  fd.write(
+    &quote! {
+      use super::runtime::*;
+      use std::collections::VecDeque;
+      use std::collections::BinaryHeap;
+      use std::cmp::Reverse;
+      use num_bigint::{BigInt, BigUint};
+    }
+    .to_string()
+    .as_bytes(),
+  )?;
   let mut em = ElaborateModule::new(sys, slab_cache);
   for module in em.sys.module_iter() {
     if let Some(buffer) = em.visit_module(&module) {
@@ -1124,11 +1315,14 @@ fn dump_module(
   Ok(())
 }
 
-fn dump_header(fd: &mut File) -> Result<usize, std::io::Error> {
+fn dump_main(fd: &mut File) -> Result<usize, std::io::Error> {
   let src = quote::quote! {
-    use std::collections::VecDeque;
-    use std::collections::BinaryHeap;
-    use std::cmp::{Ord, Reverse};
+    mod runtime;
+    mod modules;
+
+    fn main() {
+      runtime::simulate();
+    }
   };
   fd.write(src.to_string().as_bytes())?;
   fd.write("\n\n\n".as_bytes())
@@ -1156,23 +1350,49 @@ pub fn elaborate_impl(sys: &SysBuilder, config: &Config) -> Result<String, std::
     .output()
     .expect("Failed to init cargo project");
   assert!(output.status.success());
+  // Dump the Cargo.toml and rustfmt.toml
+  {
+    let mut cargo = OpenOptions::new()
+      .write(true)
+      .append(true)
+      .open(format!("{}/Cargo.toml", dir_name))?;
+    writeln!(cargo, "num-bigint = \"0.4\"")?;
+    let mut fmt = fs::File::create(format!("{}/rustfmt.toml", dir_name))?;
+    writeln!(fmt, "max_width = 100")?;
+    writeln!(fmt, "tab_spaces = 2")?;
+    fmt.flush()?;
+  }
+  // eprintln!("Writing simulator source to file: {}", fname);
   let fname = format!("{}/src/main.rs", dir_name);
-  eprintln!("Writing simulator source to file: {}", fname);
-  let mut fd = fs::File::create(fname.clone()).expect("Open failure");
-  dump_header(&mut fd).expect("Dump head failure");
   let (rt_src, ri) = dump_runtime(sys, config);
-  dump_module(sys, &mut fd, &ri).expect("Dump module failure");
-  fd.write(rt_src.as_bytes()).expect("Dump runtime failure");
-  fd.flush().expect("Flush failure");
+  {
+    let modules_file = format!("{}/src/modules.rs", dir_name);
+    let mut fd = fs::File::create(modules_file).expect("Open failure");
+    dump_modules(sys, &mut fd, &ri).expect("Dump module failure");
+    fd.flush().expect("Flush modules failure");
+  }
+  {
+    let runtime_file = format!("{}/src/runtime.rs", dir_name);
+    let mut fruntime = fs::File::create(runtime_file).expect("Open failure");
+    fruntime
+      .write(rt_src.as_bytes())
+      .expect("Dump runtime failure");
+    fruntime.flush().expect("Flush runtime failure");
+  }
+  {
+    let mut fd = fs::File::create(fname.clone()).expect("Open failure");
+    dump_main(&mut fd).expect("Dump head failure");
+    fd.flush().expect("Flush main failure");
+  }
   Ok(fname)
 }
 
 pub fn elaborate(sys: &SysBuilder, config: &Config) -> Result<String, std::io::Error> {
   let fname = elaborate_impl(sys, config)?;
-  let output = Command::new("rustfmt")
-    .arg(&fname)
-    .arg("--config")
-    .arg("max_width=100,tab_spaces=2")
+  let output = Command::new("cargo")
+    .arg("fmt")
+    .arg("--manifest-path")
+    .arg(&format!("{}/Cargo.toml", config.dir_name(sys)))
     .output()
     .expect("Failed to format");
   assert!(output.status.success(), "Failed to format: {:?}", output);
