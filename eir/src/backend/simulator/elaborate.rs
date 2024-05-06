@@ -450,6 +450,35 @@ impl Visitor<String> for ElaborateModule<'_, '_> {
             cond, true_value, false_value
           )
         }
+        Opcode::Cast => {
+          let src_ref = expr.get_operand(0).unwrap();
+          let src = src_ref.get_value();
+          let src_dtype = src.get_dtype(expr.sys).unwrap();
+          let dest_dtype = expr.dtype();
+          let a = dump_ref!(self.sys, src);
+          if src_dtype.is_int()
+            && src_dtype.is_signed()
+            && dest_dtype.is_int()
+            && !dest_dtype.is_signed()
+          {
+            // perform zero extension
+            format!(
+              "{} as {} as {}",
+              a,
+              dtype_to_rust_type(&src_dtype).replace("i", "u"),
+              dtype_to_rust_type(&dest_dtype)
+            )
+          } else {
+            format!("{} as {}", a, dtype_to_rust_type(&dest_dtype))
+          }
+        }
+        Opcode::Sext => {
+          let src_ref = expr.get_operand(0).unwrap();
+          let src = src_ref.get_value();
+          let dest_dtype = expr.dtype();
+          let a = dump_ref!(self.sys, src);
+          format!("{} as {}", a, dtype_to_rust_type(&dest_dtype))
+        }
         Opcode::Bind(_) => {
           let callee = {
             let n = expr.get_num_operands();
