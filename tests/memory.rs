@@ -2,7 +2,7 @@ use eda4eda::module_builder;
 use eir::{backend, builder::SysBuilder, xform};
 
 module_builder!(
-  mem_sink()(rdata:int<32>) {
+  mem_sink()(rdata:bits<32>) {
     log("rdata: {}", rdata);
   }
 );
@@ -12,19 +12,25 @@ fn sram_sys() -> SysBuilder {
     driver(sink, mem)() {
       cnt = array(int<32>, 1);
       v = cnt[0];
-      v = v.slice(0, 9);
-      async_call mem { raddr: v, r: sink };
+      write = v.slice(0, 0);
+      write = write.cast(bits<1>);
+      wdata = v.cast(bits<32>);
       plused = v.add(1);
+      waddr = plused.slice(0, 9);
+      waddr = waddr.cast(uint<10>);
+      raddr = v.slice(0, 9);
+      raddr = raddr.cast(uint<10>);
+      addr = default raddr.case(write, waddr);
+      async_call mem { addr: addr, write: write, wdata: wdata, r: sink };
       cnt[0] = plused;
     }
   );
 
   let mut sys = SysBuilder::new("sram");
   let sink = mem_sink_builder(&mut sys);
-  // TODO: data is a Bits, not Int
   let memory = sys.create_memory(
     "sram",
-    eir::ir::DataType::Int(32),
+    32,
     1024,
     /* latency: [min, max] */ (1, 1),
     None,
