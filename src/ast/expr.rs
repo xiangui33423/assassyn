@@ -1,12 +1,13 @@
 use eir::ir::DataType;
-use syn::{parenthesized, parse::Parse, punctuated::Punctuated, Token};
+use syn::{bracketed, parenthesized, parse::Parse, punctuated::Punctuated, Token};
 
-use super::node::{ArrayAccess, WeakSpanned};
+use super::node::{ArrayAccess, FuncCall, WeakSpanned};
 
 pub(crate) enum ExprTerm {
   Ident(syn::Ident),
   Const((DType, syn::LitInt)),
   StrLit(syn::LitStr),
+  ArrayAccess(ArrayAccess),
 }
 
 pub(crate) struct ModuleAttrs {
@@ -53,6 +54,7 @@ impl WeakSpanned for ExprTerm {
       ExprTerm::Ident(id) => id.span(),
       ExprTerm::Const((_, lit)) => lit.span(),
       ExprTerm::StrLit(lit) => lit.span(),
+      ExprTerm::ArrayAccess(ArrayAccess { id, .. }) => id.span(),
     }
   }
 }
@@ -63,14 +65,16 @@ impl Parse for ExprTerm {
       let lit = input.parse::<syn::LitStr>()?;
       Ok(ExprTerm::StrLit(lit))
     } else if input.cursor().ident().is_some() {
-      let id = input.parse::<syn::Ident>().unwrap_or_else(|_| {
-        panic!(
-          "{}:{}: Failed to parse identifier in ExprTerm",
-          file!(),
-          line!()
-        )
-      });
-      Ok(ExprTerm::Ident(id))
+      let id = input.parse::<syn::Ident>()?;
+      if input.peek(syn::token::Bracket) {
+        let raw_idx;
+        syn::bracketed!(raw_idx in input);
+        let idx = raw_idx.parse::<Expr>()?;
+        let idx = Box::new(idx);
+        Ok(ExprTerm::ArrayAccess(ArrayAccess { id, idx }))
+      } else {
+        Ok(ExprTerm::Ident(id))
+      }
     } else if input.cursor().literal().is_some() {
       let lit = input.parse::<syn::LitInt>()?;
       let ty = if input.peek(syn::Token![.]) {
@@ -137,76 +141,128 @@ impl Parse for LValue {
 
 pub(crate) enum Expr {
   // ExprTerm . syn::Ident ( ExprTerm ): a.add(b)
-  Binary((ExprTerm, syn::Ident, ExprTerm)),
+  Binary((Box<Expr>, syn::Ident, Box<Expr>)),
   // ExprTerm . syn::Ident ( ): a.flip()
-  Unary((ExprTerm, syn::Ident)),
+  Unary((Box<Expr>, syn::Ident)),
   // "default" ExprTerm . "case" ( ExprTerm, ExprTerm )
   //                    . "case" ( ExprTerm, ExprTerm ) *
-  Select((ExprTerm, Vec<(ExprTerm, ExprTerm)>)),
+  Select((Box<Expr>, Vec<(Expr, Expr)>)),
+  // "bind" FuncCall
+  Bind(FuncCall),
+  // "array" ( DType, syn::LitInt, Option<ExprTerm> )
+  ArrayAlloc((DType, syn::LitInt, Option<Punctuated<ExprTerm, Token![,]>>)),
   // ExprTerm . slice ( ExprTerm, ExprTerm )
-  Slice((ExprTerm, ExprTerm, ExprTerm)),
+  Slice((Box<Expr>, ExprTerm, ExprTerm)),
   // ExprTerm . [cast | sext] ( DType )
-  DTConv((syn::Ident, ExprTerm, DType)),
+  DTConv((syn::Ident, Box<Expr>, DType)),
   // ExprTerm
   Term(ExprTerm),
+}
+
+fn expr_terminates(input: &syn::parse::ParseStream) -> bool {
+  input.is_empty() || input.peek(syn::Token![;]) || input.peek(syn::Token![,]) || {
+    input.cursor().punct().map_or(false, |(punct, next)| {
+      punct.as_char() == '.' && next.ident().map_or(false, |(ident, _)| ident.eq("case"))
+    })
+  }
 }
 
 impl Parse for Expr {
   fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
     let tok = input.parse::<ExprTerm>()?;
     if let ExprTerm::Ident(id) = &tok {
-      if *id == "default" {
-        let default_value = input.parse::<ExprTerm>()?;
-        let mut cases = Vec::new();
-        while !input.peek(syn::Token![;]) {
-          input.parse::<syn::Token![.]>()?; // Consume "."
-          input.parse::<syn::Ident>()?; // Consume "case"
-          let content;
-          parenthesized!(content in input);
-          let cond = content.parse::<ExprTerm>()?;
-          content.parse::<syn::Token![,]>().expect("Expect a \",\""); // Consume ","
-          let value = content.parse::<ExprTerm>()?;
-          cases.push((cond, value));
+      match id.to_string().as_str() {
+        "default" => {
+          let default_value = input.parse::<Expr>()?;
+          let mut cases = Vec::new();
+          while !input.peek(syn::Token![;]) {
+            input.parse::<syn::Token![.]>()?; // Consume "."
+            input.parse::<syn::Ident>()?; // Consume "case"
+            let content;
+            parenthesized!(content in input);
+            let cond = content.parse::<Expr>()?;
+            content.parse::<syn::Token![,]>().expect("Expect a \",\""); // Consume ","
+            let value = content.parse::<Expr>()?;
+            cases.push((cond, value));
+          }
+          return Ok(Expr::Select((Box::new(default_value), cases)));
         }
-        return Ok(Expr::Select((default_value, cases)));
+        "bind" => {
+          let func = input.parse::<FuncCall>()?;
+          return Ok(Expr::Bind(func));
+        }
+        "array" => {
+          let args;
+          syn::parenthesized!(args in input);
+          let ty = args.parse::<DType>()?;
+          args.parse::<syn::Token![,]>()?;
+          let size = args.parse::<syn::LitInt>()?;
+          let initializer = if !args.is_empty() {
+            args.parse::<syn::Token![,]>()?;
+            let initializer;
+            bracketed!(initializer in args);
+            let initializer = initializer.parse_terminated(ExprTerm::parse, syn::Token![,])?;
+            Some(initializer)
+          } else {
+            None
+          };
+          return Ok(Expr::ArrayAlloc((ty, size, initializer)));
+        }
+        _ => {}
       }
     }
-    if !input.peek(syn::Token![.]) {
+    if expr_terminates(&input) {
       return Ok(Expr::Term(tok));
     }
-    let a = tok;
-    input.parse::<syn::Token![.]>()?; // Consume "."
-    let operator = input.parse::<syn::Ident>()?;
-    let content;
-    parenthesized!(content in input);
-    match operator.to_string().as_str() {
-      "slice" => {
-        let l = content.parse::<ExprTerm>()?;
-        content.parse::<syn::Token![,]>()?; // Consume ","
-        let r = content.parse::<ExprTerm>()?;
-        Ok(Expr::Slice((a, l, r)))
+    let mut expr = Expr::Term(tok);
+    while !expr_terminates(&input) {
+      match input.parse::<syn::Token![.]>() {
+        // Consume "."
+        Ok(_) => {}
+        Err(_) => {
+          Err(syn::Error::new(
+            input.span(),
+            format!("{}:{}: Expected \".\" or terminator.", file!(), line!(),),
+          ))?;
+        }
       }
-      // TODO(@were): Deprecate pop, make it opaque to users.
-      "flip" | "pop" | "valid" | "peek" => Ok(Expr::Unary((a, operator))),
-      "add" | "mul" | "sub" | "igt" | "ilt" | "ige" | "ile" | "eq" | "neq" | "bitwise_and"
-      | "bitwise_or" | "concat" => {
-        let b = content.parse::<ExprTerm>()?;
-        Ok(Expr::Binary((a, operator, b)))
+      let operator = input.parse::<syn::Ident>()?;
+      let operands;
+      parenthesized!(operands in input);
+      match operator.to_string().as_str() {
+        "slice" => {
+          let l = operands.parse::<ExprTerm>()?;
+          operands.parse::<syn::Token![,]>()?; // Consume ","
+          let r = operands.parse::<ExprTerm>()?;
+          expr = Expr::Slice((Box::new(expr), l, r));
+        }
+        // TODO(@were): Deprecate pop, make it opaque to users.
+        "flip" | "pop" | "valid" | "peek" => {
+          expr = Expr::Unary((Box::new(expr), operator));
+        }
+        "add" | "mul" | "sub" | "igt" | "ilt" | "ige" | "ile" | "eq" | "neq" | "bitwise_and"
+        | "bitwise_or" | "concat" => {
+          let b = Box::new(operands.parse::<Expr>()?);
+          expr = Expr::Binary((Box::new(expr), operator, b))
+        }
+        "cast" | "sext" => {
+          let t = operands.parse::<DType>()?;
+          expr = Expr::DTConv((operator, Box::new(expr), t))
+        }
+        _ => {
+          return Err(syn::Error::new(
+            operator.span(),
+            format!(
+              "{}:{}: Unsupported operator: \"{}\"",
+              file!(),
+              line!(),
+              operator
+            ),
+          ))
+        }
       }
-      "cast" | "sext" => {
-        let t = content.parse::<DType>()?;
-        Ok(Expr::DTConv((operator, a, t)))
-      }
-      _ => Err(syn::Error::new(
-        operator.span(),
-        format!(
-          "{}:{}: Unsupported operator: \"{}\"",
-          file!(),
-          line!(),
-          operator
-        ),
-      )),
     }
+    Ok(expr)
   }
 }
 
