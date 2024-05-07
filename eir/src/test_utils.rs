@@ -43,6 +43,11 @@ pub fn run_simulator(
     .unwrap_or_else(|_| panic!("Failed to run \"{}\"", config.dir_name(sys)));
   let raw_output = String::from_utf8(output.stdout).unwrap();
   println!("{}", raw_output);
+  assert!(
+    output.status.success(),
+    "Failed to run \"{}\"",
+    config.dir_name(sys)
+  );
   if let Some((func, cond_cnt)) = cond {
     let actual = raw_output.lines().filter(func).count();
     if let Some(expected) = cond_cnt {
