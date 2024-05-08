@@ -12,7 +12,7 @@ use crate::ir::{
   *,
 };
 
-use self::{expr::BindKind, user::Operand};
+use self::user::Operand;
 
 use super::symbol_table::SymbolTable;
 
@@ -456,7 +456,7 @@ impl SysBuilder {
     assert!({
       let expr = self.get::<Expr>(&bind).unwrap();
       match expr.get_opcode() {
-        Opcode::Bind(_) => true,
+        Opcode::Bind => true,
         _ => false,
       }
     });
@@ -525,12 +525,7 @@ impl SysBuilder {
         let module = node.as_ref::<Module>(self).unwrap();
         let mut args = vec![BaseNode::unknown(); module.get_num_inputs()];
         args.push(module.upcast());
-        self.create_expr(
-          DataType::void(),
-          Opcode::Bind(BindKind::Unknown),
-          args,
-          false,
-        )
+        self.create_expr(DataType::void(), Opcode::Bind, args, false)
       }
       // An expression should be a module type.
       NodeKind::Expr => {
@@ -546,14 +541,9 @@ impl SysBuilder {
             };
             let mut args = vec![BaseNode::unknown(); n];
             args.push(node);
-            self.create_expr(
-              DataType::void(),
-              Opcode::Bind(BindKind::Sequential),
-              args,
-              false,
-            )
+            self.create_expr(DataType::void(), Opcode::Bind, args, false)
           }
-          Opcode::Bind(_) => node,
+          Opcode::Bind => node,
           _ => failure(),
         }
       }
@@ -728,7 +718,14 @@ impl SysBuilder {
       let gep = ptr.as_expr::<GetElementPtr>(self).unwrap();
       let array = gep.get_array();
       let dtype = array.scalar_ty();
-      assert_eq!(value.get_dtype(self).unwrap(), dtype);
+      assert_eq!(
+        value.get_dtype(self).unwrap(),
+        dtype,
+        "Cannot write {:?} with type {:?} to an array with type {:?}",
+        value.to_string(self),
+        value.get_dtype(self).unwrap(),
+        dtype
+      );
       array.upcast()
     };
     let operands = vec![ptr.clone(), value.clone()];
@@ -747,6 +744,14 @@ impl SysBuilder {
     let aty = a.get_dtype(self).unwrap();
     let bty = b.get_dtype(self).unwrap();
     if op.is_cmp() {
+      if aty.get_bits() != bty.get_bits() {
+        panic!(
+          "Cannot compare types {} and {} for {:?}",
+          aty.to_string(),
+          bty.to_string(),
+          op
+        );
+      }
       return DataType::uint_ty(1);
     }
     match op {
