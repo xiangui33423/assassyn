@@ -9,6 +9,7 @@ use crate::builder::SysBuilder;
 use crate::ir::node::*;
 use crate::ir::*;
 
+use self::instructions::GetElementPtr;
 use self::user::Operand;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -18,7 +19,8 @@ pub enum Attribute {
   EagerBind,        // All the binds in this module will be called after arguments are fully bound.
   AllowPartialCall, // Allow some arguments are not given to call this module.
   NoArbiter,        // The compiler will skip to generate an arbiter for this module,
-                    // even if it has multiple callers.
+  // even if it has multiple callers.
+  Systolic, // The module is a systolic array.
 }
 
 /// The data structure for a module.
@@ -271,10 +273,11 @@ impl<'a> ModuleMut<'a> {
     let operand_ref = operand.as_ref::<Operand>(self.sys).unwrap();
     let value = operand_ref.get_value();
     match value.get_kind() {
-      NodeKind::ArrayPtr => {
-        let aptr = operand.as_ref::<ArrayPtr>(self.sys).unwrap();
-        let array = aptr.get_array().clone();
-        self.insert_external_interface(array, operand);
+      NodeKind::Expr => {
+        if let Ok(gep) = value.as_expr::<GetElementPtr>(self.sys) {
+          let array = gep.get_array();
+          self.insert_external_interface(array.upcast(), operand);
+        }
       }
       NodeKind::FIFO => {
         self.insert_external_interface(value.clone(), operand);
