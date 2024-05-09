@@ -1,8 +1,7 @@
-use eda4eda::module_builder;
-use eir::{builder::SysBuilder, test_utils::run_simulator};
+pub fn async_call() {
+  use eda4eda::module_builder;
+  use eir::{builder::SysBuilder, test_utils::run_simulator};
 
-#[test]
-fn common_read() {
   module_builder!(
     adder()(a:int<32>, b:int<32>) {
       c = a.add(b);
@@ -12,18 +11,18 @@ fn common_read() {
 
   module_builder!(
     driver(/*external interf*/adder)(/*in-ports*/) {
-      cnt     = array(int<32>, 1);
-      new_cnt = cnt[0].add(1);
-      cnt[0]  = new_cnt;
-      cond    = cnt[0].ilt(100);
+      cnt    = array(int<32>, 1);
+      v      = cnt[0];
+      new_v  = v.add(1);
+      cond   = v.ilt(100);
+      cnt[0] = new_v;
       when cond {
-        async_call adder { a: cnt[0], b: cnt[0] };
+        async_call adder { a: v, b: v };
       }
     }
   );
 
-  let mut sys = SysBuilder::new("common_read");
-
+  let mut sys = SysBuilder::new("async_call");
   // Create a trivial module.
   let adder = adder_builder(&mut sys);
   // Build the driver module.

@@ -1,8 +1,7 @@
 use eda4eda::module_builder;
-use eir::{builder::SysBuilder, test_utils::run_simulator};
+use eir::builder::SysBuilder;
 
-#[test]
-fn back_pressure() {
+pub fn eager_bind() {
   module_builder!(sub()(a:int<32>, b:int<32>) {
     c = a.sub(b);
     log("sub: {} - {} = {}", a, b, c);
@@ -10,39 +9,41 @@ fn back_pressure() {
 
   module_builder!(driver(lhs, rhs)() {
     cnt = array(int<32>, 1);
-    v = cnt[0].add(1);
+    k = cnt[0.int<32>];
+    v = k.add(1);
     cnt[0] = v;
-    async_call lhs { a: v.add(v) };
-    async_call rhs { b: v };
+    mul = v.add(v);
+    async_call lhs { v: mul };
+    async_call rhs { v: v };
   });
 
   module_builder!(
-    lhs(suber)(a:int<32>) {
-      rhs = bind suber { a: a };
-    }.expose(rhs)
+    lhs(sub)(v:int<32>) {
+      bound = bind sub { a: v };
+    }.expose(bound)
   );
 
-  let mut sys = SysBuilder::new("back_pressure");
-  let suber = sub_builder(&mut sys);
-  let (lhs, rhs) = lhs_builder(&mut sys, suber);
+  module_builder!(
+    rhs(bound)(v:int<32>) #eager_bind {
+      _bound = bind bound { b: v };
+    }
+  );
+
+  let mut sys = SysBuilder::new("eager_bind");
+  let sub = sub_builder(&mut sys);
+  let (lhs, aa) = lhs_builder(&mut sys, sub);
+  let rhs = rhs_builder(&mut sys, aa);
   driver_builder(&mut sys, lhs, rhs);
+  println!("{}", sys);
   eir::builder::verify(&sys);
-  println!("{}", sys);
-  let o1 = eir::xform::Config {
-    rewrite_wait_until: true,
-  };
-  eir::xform::basic(&mut sys, &o1);
-  println!("{}", sys);
 
   let config = eir::backend::common::Config::default();
-
   eir::backend::verilog::elaborate(&sys, &config).unwrap();
 
-  run_simulator(
+  eir::test_utils::run_simulator(
     &sys,
     &config,
     Some((
-      /*Condition Assertion*/
       |x| {
         if x.contains("sub") {
           let raw = x.split(" ").collect::<Vec<&str>>();
@@ -56,7 +57,7 @@ fn back_pressure() {
           false
         }
       },
-      /*Expected Lines*/ Some(99),
+      Some(99),
     )),
   );
 }
