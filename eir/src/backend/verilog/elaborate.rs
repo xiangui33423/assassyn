@@ -168,8 +168,9 @@ impl<'a> VerilogDumper<'a> {
     res.push_str("always_ff @(posedge clk or negedge rst_n)");
     res.push_str(
       format!(
-        "if (!rst_n) array_{}_q <= '{{default : 4'h0}};\n",
+        "if (!rst_n) array_{}_q <= '{{default : {}'d0}};\n",
         array_name,
+        array.scalar_ty().get_bits()
       )
       .as_str(),
     );
@@ -177,6 +178,8 @@ impl<'a> VerilogDumper<'a> {
       " else if (array_{}_w) array_{}_q[array_{}_widx] <= array_{}_d;\n",
       array_name, array_name, array_name, array_name
     ));
+
+    res.push_str("\n");
 
     res
   }
@@ -987,36 +990,40 @@ impl<'a> Visitor<String> for VerilogDumper<'a> {
         .as_str(),
       );
     } else {
-      let mut body_waituntil_cnt = 0;
       let mut wait_until: Option<String> = None;
 
-      for elem in module.get_body().iter().skip(1) {
-        match elem.get_kind() {
-          NodeKind::Expr => break,
-          NodeKind::Block => {
-            let block = elem.as_ref::<Block>(self.sys).unwrap();
-            if let BlockKind::WaitUntil(cond) = block.get_kind() {
-              body_waituntil_cnt += 1;
-              let cond = cond.as_ref::<Expr>(self.sys).unwrap();
-              wait_until = Some(format!(
-                " && ({}{})",
-                namify(cond.upcast().to_string(self.sys).as_str()),
-                if cond.dtype().get_bits() == 1 {
-                  "".into()
-                } else {
-                  format!(" != 0")
+      if let BlockKind::WaitUntil(cond) = module.get_body().get_kind() {
+        let cond_block = cond.as_ref::<Block>(self.sys).unwrap();
+        match cond_block.get_kind() {
+          BlockKind::Valued(value_node) => {
+            for elem in cond_block.iter() {
+              match elem.get_kind() {
+                NodeKind::Expr => {
+                  let expr = elem.as_ref::<Expr>(self.sys).unwrap();
+                  res.push_str(self.visit_expr(&expr).unwrap().as_str());
                 }
-              ));
+                NodeKind::Block => {
+                  let block = elem.as_ref::<Block>(self.sys).unwrap();
+                  res.push_str(self.visit_block(&block).unwrap().as_str());
+                }
+                _ => {
+                  panic!("Unexpected reference type: {:?}", elem);
+                }
+              }
             }
+            let value = value_node.as_ref::<Expr>(self.sys).unwrap();
+            wait_until = Some(format!(
+              " && ({}{})",
+              namify(value_node.to_string(self.sys).as_str()),
+              if value.dtype().get_bits() == 1 {
+                "".into()
+              } else {
+                format!(" != 0")
+              }
+            ));
           }
-          _ => {
-            panic!("Unexpected reference type: {:?}", elem);
-          }
+          _ => panic!("Expect valued block for wait_until condition"),
         }
-      }
-
-      if body_waituntil_cnt > 1 {
-        panic!("multiple wait_until blocks in {}", module.get_name());
       }
 
       res.push_str(format!("logic trigger;\n").as_str());
@@ -1281,6 +1288,18 @@ impl<'a> Visitor<String> for VerilogDumper<'a> {
               .unwrap();
             (gep.get_array(), gep.get_index())
           };
+          let array_name = namify(array_ref.get_name());
+          match self.array_drivers.get_mut(&array_name) {
+            Some(ads) => {
+              ads.insert(self.current_module.clone());
+            }
+            None => {
+              self.array_drivers.insert(
+                array_name.clone(),
+                HashSet::from([self.current_module.clone()]),
+              );
+            }
+          }
           Some(format!(
             "logic [{}:0] {};\nassign {} = array_{}_q[{}];\n\n",
             expr.dtype().get_bits() - 1,
@@ -1385,6 +1404,22 @@ impl<'a> Visitor<String> for VerilogDumper<'a> {
           Some(format!(
             "logic [{}:0] {};\nassign {} = fifo_{}_pop_data;\n\n",
             fifo.scalar_ty().get_bits() - 1,
+            namify(expr.upcast().to_string(self.sys).as_str()),
+            namify(expr.upcast().to_string(self.sys).as_str()),
+            fifo_name
+          ))
+        }
+
+        Opcode::FIFOValid => {
+          let fifo = expr
+            .get_operand(0)
+            .unwrap()
+            .get_value()
+            .as_ref::<FIFO>(self.sys)
+            .unwrap();
+          let fifo_name = fifo_name!(fifo);
+          Some(format!(
+            "logic {};\nassign {} = fifo_{}_pop_valid;\n\n",
             namify(expr.upcast().to_string(self.sys).as_str()),
             namify(expr.upcast().to_string(self.sys).as_str()),
             fifo_name
