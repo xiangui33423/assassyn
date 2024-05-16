@@ -33,7 +33,7 @@ macro_rules! find_opcode_attr {
 }
 
 macro_rules! register_opcodes {
-  ( $( $opcode:ident ( $fe_method: literal $mn:literal $arity:expr ) => { $($ky:ident),* } ),* $(,)? ) => {
+  ( $( $opcode:ident $( ( $subcode:ident ) )? ( $fe_method: literal $mn:literal $arity:expr ) => { $($ky:ident),* } ),* $(,)? ) => {
 
     #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
     pub enum Opcode {
@@ -110,6 +110,8 @@ register_opcodes!(
   Add("add" "+" 2 /*lhs rhs*/) => { binary, valued },
   Sub("sub" "-" 2 /*lhs rhs*/) => { binary, valued },
   Mul("mul" "*" 2 /*lhs rhs*/) => { binary, valued },
+  Shl("shl" "<<" 2 /*lhs rhs*/) => { binary, valued },
+  Shr("shr" ">>" 2 /*lhs rhs*/) => { binary, valued },
   BitwiseAnd("bitwise_and" "&" 2/*lhs rhs*/) => { binary, valued },
   BitwiseOr("bitwise_or" "|" 2/*lhs rhs*/) => { binary, valued },
   BitwiseXor("bitwise_xor" "^" 2/*lhs rhs*/) => { binary, valued },
