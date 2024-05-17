@@ -558,7 +558,7 @@ impl SysBuilder {
   ) -> BaseNode {
     let module = {
       let bind = bind.as_expr::<Bind>(self).unwrap();
-      let callee = bind.get_callee();
+      let callee = bind.callee();
       callee.as_ref::<Module>(self).unwrap_or_else(|_| {
         panic!(
           "Only module callee can be used for bind, but {:?} got!",
@@ -612,7 +612,7 @@ impl SysBuilder {
   pub fn push_bind(&mut self, bind: BaseNode, value: BaseNode, eager: Option<bool>) -> BaseNode {
     let (callee, signature, port_idx) = {
       let bind = bind.as_expr::<Bind>(self).unwrap();
-      let callee = bind.get_callee();
+      let callee = bind.callee();
       let signature = callee.get_dtype(self).unwrap();
       let port_idx = {
         let mut idx = None;
@@ -702,7 +702,7 @@ impl SysBuilder {
   pub fn create_array_read<'elem>(&mut self, ptr: BaseNode) -> BaseNode {
     let (array, dtype) = {
       let gep = ptr.as_expr::<GetElementPtr>(self).unwrap();
-      let array = gep.get_array();
+      let array = gep.array();
       let dtype = array.scalar_ty();
       (array.upcast(), dtype)
     };
@@ -720,7 +720,7 @@ impl SysBuilder {
   pub fn create_array_write(&mut self, ptr: BaseNode, value: BaseNode) -> BaseNode {
     let array = {
       let gep = ptr.as_expr::<GetElementPtr>(self).unwrap();
-      let array = gep.get_array();
+      let array = gep.array();
       let dtype = array.scalar_ty();
       assert_eq!(
         value.get_dtype(self).unwrap(),
@@ -924,11 +924,11 @@ impl Display for SysBuilder {
     let mut printer = IRPrinter::new(false);
     write!(f, "system {} {{\n", self.name)?;
     for elem in self.array_iter() {
-      write!(f, "  {};\n", printer.visit_array(&elem).unwrap())?;
+      write!(f, "  {};\n", printer.visit_array(elem).unwrap())?;
     }
     printer.inc_indent();
     for elem in self.module_iter() {
-      write!(f, "\n{}", printer.visit_module(&elem).unwrap())?;
+      write!(f, "\n{}", printer.visit_module(elem).unwrap())?;
     }
     printer.dec_indent();
     write!(f, "}}")

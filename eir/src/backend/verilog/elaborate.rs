@@ -10,10 +10,7 @@ use crate::{
   ir::{module::memory::parse_memory_module_name, node::*, visitor::Visitor, *},
 };
 
-use self::{
-  expr::subcode,
-  instructions::{Bind, GetElementPtr},
-};
+use self::{expr::subcode, instructions::FIFOPush};
 
 fn namify(name: &str) -> String {
   name.replace(".", "_")
@@ -661,15 +658,11 @@ fn get_triggered_modules(node: &BaseNode, sys: &SysBuilder) -> Vec<String> {
     }
     NodeKind::Expr => {
       let expr = node.as_ref::<Expr>(sys).unwrap();
-      if expr.get_opcode() == Opcode::AsyncCall {
+      if matches!(expr.get_opcode(), Opcode::AsyncCall) {
+        let call = expr.as_sub::<instructions::AsyncCall>().unwrap();
         let triggered_module = {
-          let bind = expr
-            .get_operand(0)
-            .unwrap()
-            .get_value()
-            .as_expr::<Bind>(sys)
-            .unwrap();
-          bind.get_callee()
+          let bind = call.bind();
+          bind.callee()
         };
         let triggered_module = triggered_module.as_ref::<Module>(sys).unwrap();
         triggered_modules.push(namify(triggered_module.get_name()));
@@ -712,7 +705,7 @@ macro_rules! dump_ref {
 }
 
 impl<'a> Visitor<String> for VerilogDumper<'a> {
-  fn visit_module(&mut self, module: &ModuleRef<'_>) -> Option<String> {
+  fn visit_module(&mut self, module: ModuleRef<'_>) -> Option<String> {
     if module.get_name() == "testbench" {
       self.has_testbench = true;
     }
@@ -915,15 +908,11 @@ impl<'a> Visitor<String> for VerilogDumper<'a> {
       let mut rdata_module: Option<String> = None;
       for node in module.get_body().iter() {
         let expr = node.as_ref::<Expr>(self.sys).unwrap();
-        self.visit_expr(&expr);
+        self.visit_expr(expr.clone());
         match expr.get_opcode() {
           Opcode::FIFOPush => {
-            let fifo = expr
-              .get_operand(0)
-              .unwrap()
-              .get_value()
-              .as_ref::<FIFO>(self.sys)
-              .unwrap();
+            let push = expr.as_sub::<FIFOPush>().unwrap();
+            let fifo = push.fifo();
             let fifo_module = namify(
               fifo
                 .get_parent()
@@ -935,14 +924,10 @@ impl<'a> Visitor<String> for VerilogDumper<'a> {
             rdata_fifo = Some(format!("{}_{}", fifo_module, fifo_name));
           }
           Opcode::AsyncCall => {
+            let call = expr.as_sub::<instructions::AsyncCall>().unwrap();
             let module = {
-              let operand = expr.get_operand(0).unwrap();
-              let bind = operand.get_value();
-              let module = {
-                let bind = bind.as_expr::<Bind>(expr.sys).unwrap();
-                bind.get_callee()
-              };
-              module.as_ref::<Module>(expr.sys).unwrap()
+              let bind = call.bind();
+              bind.callee().as_ref::<Module>(call.get().sys).unwrap()
             };
             rdata_module = Some(namify(module.get_name()));
           }
@@ -1013,11 +998,11 @@ impl<'a> Visitor<String> for VerilogDumper<'a> {
               match elem.get_kind() {
                 NodeKind::Expr => {
                   let expr = elem.as_ref::<Expr>(self.sys).unwrap();
-                  res.push_str(self.visit_expr(&expr).unwrap().as_str());
+                  res.push_str(self.visit_expr(expr).unwrap().as_str());
                 }
                 NodeKind::Block => {
                   let block = elem.as_ref::<Block>(self.sys).unwrap();
-                  res.push_str(self.visit_block(&block).unwrap().as_str());
+                  res.push_str(self.visit_block(block).unwrap().as_str());
                 }
                 _ => {
                   panic!("Unexpected reference type: {:?}", elem);
@@ -1054,11 +1039,11 @@ impl<'a> Visitor<String> for VerilogDumper<'a> {
         match elem.get_kind() {
           NodeKind::Expr => {
             let expr = elem.as_ref::<Expr>(self.sys).unwrap();
-            res.push_str(self.visit_expr(&expr).unwrap().as_str());
+            res.push_str(self.visit_expr(expr).unwrap().as_str());
           }
           NodeKind::Block => {
             let block = elem.as_ref::<Block>(self.sys).unwrap();
-            res.push_str(self.visit_block(&block).unwrap().as_str());
+            res.push_str(self.visit_block(block).unwrap().as_str());
           }
           _ => {
             panic!("Unexpected reference type: {:?}", elem);
@@ -1169,7 +1154,7 @@ impl<'a> Visitor<String> for VerilogDumper<'a> {
     Some(res)
   }
 
-  fn visit_block(&mut self, block: &BlockRef<'_>) -> Option<String> {
+  fn visit_block(&mut self, block: BlockRef<'_>) -> Option<String> {
     let mut res = String::new();
     match block.get_kind() {
       BlockKind::Condition(cond) => {
@@ -1192,11 +1177,11 @@ impl<'a> Visitor<String> for VerilogDumper<'a> {
       match elem.get_kind() {
         NodeKind::Expr => {
           let expr = elem.as_ref::<Expr>(self.sys).unwrap();
-          res.push_str(self.visit_expr(&expr).unwrap().as_str());
+          res.push_str(self.visit_expr(expr).unwrap().as_str());
         }
         NodeKind::Block => {
           let block = elem.as_ref::<Block>(self.sys).unwrap();
-          res.push_str(self.visit_block(&block).unwrap().as_str());
+          res.push_str(self.visit_block(block).unwrap().as_str());
         }
         _ => {
           panic!("Unexpected reference type: {:?}", elem);
@@ -1207,349 +1192,341 @@ impl<'a> Visitor<String> for VerilogDumper<'a> {
     res.into()
   }
 
-  fn visit_expr(&mut self, expr: &ExprRef<'_>) -> Option<String> {
-    if expr.get_opcode().is_binary() || expr.get_opcode().is_cmp() {
-      Some(format!(
-        "logic [{}:0] {};\nassign {} = {} {} {};\n\n",
-        expr.dtype().get_bits() - 1,
-        namify(expr.upcast().to_string(self.sys).as_str()),
-        namify(expr.upcast().to_string(self.sys).as_str()),
-        dump_ref!(self.sys, expr.get_operand(0).unwrap().get_value()),
-        expr.get_opcode().to_string(),
-        dump_ref!(self.sys, expr.get_operand(1).unwrap().get_value())
-      ))
-    } else if expr.get_opcode().is_unary() {
-      Some(format!(
-        "logic [{}:0] {};\nassign {} = {}{};\n\n",
-        expr.dtype().get_bits() - 1,
-        namify(expr.upcast().to_string(self.sys).as_str()),
-        namify(expr.upcast().to_string(self.sys).as_str()),
-        expr.get_opcode().to_string(),
-        dump_ref!(self.sys, expr.get_operand(0).unwrap().get_value())
-      ))
-    } else {
-      match expr.get_opcode() {
-        Opcode::FIFOPop => {
-          let fifo = expr
-            .get_operand(0)
-            .unwrap()
-            .get_value()
-            .as_ref::<FIFO>(self.sys)
-            .unwrap();
-          Some(format!(
+  fn visit_expr(&mut self, expr: ExprRef<'_>) -> Option<String> {
+    match expr.get_opcode() {
+      Opcode::Binary { .. } => {
+        let name = namify(&expr.upcast().to_string(self.sys));
+        let dbits = expr.dtype().get_bits() - 1;
+        let bin = expr.as_sub::<instructions::Binary>().unwrap();
+        Some(format!(
+          "logic [{}:0] {};\nassign {} = {} {} {};\n\n",
+          dbits,
+          name,
+          name,
+          dump_ref!(self.sys, &bin.a()),
+          bin.get_opcode().to_string(),
+          dump_ref!(self.sys, &bin.b())
+        ))
+      }
+
+      Opcode::Unary { .. } => {
+        let name = namify(&expr.upcast().to_string(self.sys));
+        let dbits = expr.dtype().get_bits() - 1;
+        let uop = expr.as_sub::<instructions::Unary>().unwrap();
+        Some(format!(
+          "logic [{}:0] {};\nassign {} = {}{};\n\n",
+          dbits,
+          name,
+          name,
+          uop.get_opcode().to_string(),
+          dump_ref!(self.sys, &uop.x())
+        ))
+      }
+
+      Opcode::Compare { .. } => {
+        let name = namify(&expr.upcast().to_string(self.sys));
+        let dbits = expr.dtype().get_bits() - 1;
+        let cmp = expr.as_sub::<instructions::Compare>().unwrap();
+        Some(format!(
+          "logic [{}:0] {};\nassign {} = {} {} {};\n\n",
+          dbits,
+          name,
+          name,
+          dump_ref!(self.sys, &cmp.a()),
+          cmp.get_opcode().to_string(),
+          dump_ref!(self.sys, &cmp.b())
+        ))
+      }
+
+      Opcode::FIFOPop => {
+        let name = namify(&expr.upcast().to_string(self.sys));
+        let pop = expr.as_sub::<instructions::FIFOPop>().unwrap();
+        let fifo = pop.fifo();
+        Some(format!(
             "logic [{}:0] {};\nassign {} = fifo_{}_pop_data;\nassign fifo_{}_pop_ready = trigger{};\n\n",
             fifo.scalar_ty().get_bits() - 1,
-            namify(expr.upcast().to_string(self.sys).as_str()),
-            namify(expr.upcast().to_string(self.sys).as_str()),
+            name,
+            name,
             fifo_name!(fifo),
             fifo_name!(fifo),
             (self.pred.clone().and_then(|p| Some(format!(" && {}", p)))).unwrap_or("".to_string())
           ))
-        }
+      }
 
-        Opcode::Log => {
-          let mut format_str = dump_ref!(
-            self.sys,
-            expr
-              .operand_iter()
-              .collect::<Vec<OperandRef>>()
-              .first()
-              .unwrap()
-              .get_value()
+      Opcode::Log => {
+        let mut format_str = dump_ref!(
+          self.sys,
+          expr
+            .operand_iter()
+            .collect::<Vec<OperandRef>>()
+            .first()
+            .unwrap()
+            .get_value()
+        );
+        for elem in expr.operand_iter().skip(1) {
+          format_str = format_str.replacen(
+            "{}",
+            match elem.get_value().get_dtype(self.sys).unwrap() {
+              DataType::Int(_) | DataType::UInt(_) | DataType::Bits(_) => "%d",
+              DataType::Str => "%s",
+              _ => "?",
+            },
+            1,
           );
-          for elem in expr.operand_iter().skip(1) {
-            format_str = format_str.replacen(
-              "{}",
-              match elem.get_value().get_dtype(self.sys).unwrap() {
-                DataType::Int(_) | DataType::UInt(_) | DataType::Bits(_) => "%d",
-                DataType::Str => "%s",
-                _ => "?",
-              },
-              1,
+        }
+        format_str = format_str.replace("\"", "");
+        let mut res = String::new();
+        res.push_str(
+          format!(
+            "always_ff @(posedge clk iff trigger{}) ",
+            (self.pred.clone().and_then(|p| Some(format!(" && {}", p)))).unwrap_or("".to_string())
+          )
+          .as_str(),
+        );
+        res.push_str("$display(\"%t\\t");
+        res.push_str(format_str.as_str());
+        res.push_str("\", $time, ");
+        for elem in expr.operand_iter().skip(1) {
+          res.push_str(format!("{}, ", dump_ref!(self.sys, elem.get_value())).as_str());
+        }
+        res.pop();
+        res.pop();
+        res.push_str(");\n");
+        res.push_str("\n");
+        Some(res)
+      }
+
+      Opcode::Load => {
+        let dtype = expr.dtype();
+        let name = namify(expr.upcast().to_string(self.sys).as_str());
+        let load = expr.as_sub::<instructions::Load>().unwrap();
+        let gep = load.pointer();
+        let (array_ref, array_idx) = { (gep.array(), gep.index()) };
+        let array_name = namify(array_ref.get_name());
+        match self.array_drivers.get_mut(&array_name) {
+          Some(ads) => {
+            ads.insert(self.current_module.clone());
+          }
+          None => {
+            self.array_drivers.insert(
+              array_name.clone(),
+              HashSet::from([self.current_module.clone()]),
             );
           }
-          format_str = format_str.replace("\"", "");
-          let mut res = String::new();
-          res.push_str(
-            format!(
-              "always_ff @(posedge clk iff trigger{}) ",
-              (self.pred.clone().and_then(|p| Some(format!(" && {}", p))))
-                .unwrap_or("".to_string())
-            )
-            .as_str(),
-          );
-          res.push_str("$display(\"%t\\t");
-          res.push_str(format_str.as_str());
-          res.push_str("\", $time, ");
-          for elem in expr.operand_iter().skip(1) {
-            res.push_str(format!("{}, ", dump_ref!(self.sys, elem.get_value())).as_str());
-          }
-          res.pop();
-          res.pop();
-          res.push_str(");\n");
-          res.push_str("\n");
-          Some(res)
         }
-
-        Opcode::Load => {
-          let (array_ref, array_idx) = {
-            let gep = expr
-              .get_operand(0)
-              .unwrap()
-              .get_value()
-              .as_expr::<GetElementPtr>(self.sys)
-              .unwrap();
-            (gep.get_array(), gep.get_index())
-          };
-          let array_name = namify(array_ref.get_name());
-          match self.array_drivers.get_mut(&array_name) {
-            Some(ads) => {
-              ads.insert(self.current_module.clone());
-            }
-            None => {
-              self.array_drivers.insert(
-                array_name.clone(),
-                HashSet::from([self.current_module.clone()]),
-              );
-            }
-          }
-          Some(format!(
-            "logic [{}:0] {};\nassign {} = array_{}_q[{}];\n\n",
-            expr.dtype().get_bits() - 1,
-            namify(expr.upcast().to_string(self.sys).as_str()),
-            namify(expr.upcast().to_string(self.sys).as_str()),
-            namify(array_ref.get_name()),
-            dump_ref!(self.sys, &array_idx)
-          ))
-        }
-
-        Opcode::GetElementPtr => Some("".into()),
-
-        Opcode::Store => {
-          let (array_ref, array_idx) = {
-            let gep = expr
-              .get_operand(0)
-              .unwrap()
-              .get_value()
-              .as_expr::<GetElementPtr>(self.sys)
-              .unwrap();
-            (gep.get_array(), gep.get_index())
-          };
-          let array_name = namify(array_ref.get_name());
-          match self.array_drivers.get_mut(&array_name) {
-            Some(ads) => {
-              ads.insert(self.current_module.clone());
-            }
-            None => {
-              self.array_drivers.insert(
-                array_name.clone(),
-                HashSet::from([self.current_module.clone()]),
-              );
-            }
-          }
-          Some(format!(
-            "assign array_{}_w = trigger{};\nassign array_{}_d = {};\nassign array_{}_widx = {};\n\n",
-            array_name,
-            (self.pred.clone().and_then(|p| Some(format!(" && {}", p)))).unwrap_or("".to_string()),
-            array_name,
-            dump_ref!(self.sys, expr.get_operand(1).unwrap().get_value()),
-            array_name,
-            dump_ref!(self.sys, &array_idx)
-          ))
-        }
-
-        Opcode::FIFOPush => {
-          let fifo = expr
-            .get_operand(0)
-            .unwrap()
-            .get_value()
-            .as_ref::<FIFO>(self.sys)
-            .unwrap();
-          let fifo_name = namify(
-            format!(
-              "{}_{}",
-              fifo
-                .get_parent()
-                .as_ref::<Module>(self.sys)
-                .unwrap()
-                .get_name(),
-              fifo_name!(fifo)
-            )
-            .as_str(),
-          );
-          match self.fifo_drivers.get_mut(&fifo_name) {
-            Some(fds) => {
-              fds.insert(self.current_module.clone());
-            }
-            None => {
-              self.fifo_drivers.insert(
-                fifo_name.clone(),
-                HashSet::from([self.current_module.clone()]),
-              );
-            }
-          }
-          match self.fifo_pushes.get_mut(&fifo_name) {
-            Some(fps) => fps.push((
-              self.pred.clone().unwrap_or("".to_string()),
-              dump_ref!(self.sys, expr.get_operand(1).unwrap().get_value()),
-            )),
-            None => {
-              self.fifo_pushes.insert(
-                fifo_name.clone(),
-                vec![(
-                  self.pred.clone().unwrap_or("".to_string()),
-                  dump_ref!(self.sys, expr.get_operand(1).unwrap().get_value()),
-                )],
-              );
-            }
-          }
-          Some("".to_string())
-        }
-
-        Opcode::FIFOField { field } => {
-          let fifo = expr
-            .get_operand(0)
-            .unwrap()
-            .get_value()
-            .as_ref::<FIFO>(self.sys)
-            .unwrap();
-          let fifo_name = fifo_name!(fifo);
-          match field {
-            subcode::FIFO::Valid => Some(format!(
-              "logic {};\nassign {} = fifo_{}_pop_valid;\n\n",
-              namify(expr.upcast().to_string(self.sys).as_str()),
-              namify(expr.upcast().to_string(self.sys).as_str()),
-              fifo_name
-            )),
-            subcode::FIFO::Peek => Some(format!(
-              "logic [{}:0] {};\nassign {} = fifo_{}_pop_data;\n\n",
-              fifo.scalar_ty().get_bits() - 1,
-              namify(expr.upcast().to_string(self.sys).as_str()),
-              namify(expr.upcast().to_string(self.sys).as_str()),
-              fifo_name
-            )),
-            subcode::FIFO::AlmostFull => todo!(),
-          }
-        }
-
-        Opcode::AsyncCall => {
-          let module = {
-            let operand = expr
-              .get_operand(0)
-              .unwrap()
-              .get_value()
-              .as_expr::<Bind>(self.sys)
-              .unwrap();
-            operand.get_callee()
-          };
-          let module = module.as_ref::<Module>(self.sys).unwrap();
-          let module_name = namify(module.get_name());
-          match self.trigger_drivers.get_mut(&module_name) {
-            Some(tds) => {
-              tds.insert(self.current_module.clone());
-            }
-            None => {
-              self.trigger_drivers.insert(
-                module_name.clone(),
-                HashSet::from([self.current_module.clone()]),
-              );
-            }
-          }
-          match self.triggers.get_mut(&module_name) {
-            Some(trgs) => trgs.push(self.pred.clone().unwrap_or("".to_string())),
-            None => {
-              self.triggers.insert(
-                module_name.clone(),
-                vec![self.pred.clone().unwrap_or("".to_string())],
-              );
-            }
-          }
-          Some("".to_string())
-        }
-
-        Opcode::Slice => {
-          let a = dump_ref!(self.sys, &expr.get_operand(0).unwrap().get_value());
-          let l = dump_ref!(self.sys, &expr.get_operand(1).unwrap().get_value());
-          let r = dump_ref!(self.sys, &expr.get_operand(2).unwrap().get_value());
-          Some(format!(
-            "logic [{}:0] {};\nassign {} = {}[{}:{}];\n\n",
-            expr.dtype().get_bits() - 1,
-            namify(expr.upcast().to_string(self.sys).as_str()),
-            namify(expr.upcast().to_string(self.sys).as_str()),
-            a,
-            r,
-            l
-          ))
-        }
-
-        Opcode::Cast { cast } => {
-          let a = dump_ref!(self.sys, &expr.get_operand(0).unwrap().get_value());
-          match cast {
-            subcode::Cast::Cast | subcode::Cast::ZExt => Some(format!(
-              "logic [{}:0] {};\nassign {} = {};\n\n",
-              expr.dtype().get_bits() - 1,
-              namify(expr.upcast().to_string(self.sys).as_str()),
-              namify(expr.upcast().to_string(self.sys).as_str()),
-              a
-            )),
-            subcode::Cast::SExt => {
-              let src_ref = expr.get_operand(0).unwrap();
-              let src = src_ref.get_value();
-              let src_dtype = src.get_dtype(expr.sys).unwrap();
-              let dest_dtype = expr.dtype();
-              let a = dump_ref!(self.sys, src);
-              if src_dtype.is_int()
-                && src_dtype.is_signed()
-                && dest_dtype.is_int()
-                && dest_dtype.is_signed()
-                && dest_dtype.get_bits() > src_dtype.get_bits()
-              {
-                // perform sext
-                Some(format!(
-                  "logic [{}:0] {};\nassign {} = {{{}'{{{}[{}]}}, {}}};\n\n",
-                  expr.dtype().get_bits() - 1,
-                  namify(expr.upcast().to_string(self.sys).as_str()),
-                  namify(expr.upcast().to_string(self.sys).as_str()),
-                  dest_dtype.get_bits() - src_dtype.get_bits(),
-                  a,
-                  src_dtype.get_bits() - 1,
-                  a
-                ))
-              } else {
-                Some(format!(
-                  "logic [{}:0] {};\nassign {} = {};\n\n",
-                  expr.dtype().get_bits() - 1,
-                  namify(expr.upcast().to_string(self.sys).as_str()),
-                  namify(expr.upcast().to_string(self.sys).as_str()),
-                  a
-                ))
-              }
-            }
-          }
-        }
-
-        Opcode::Select => {
-          let cond = dump_ref!(self.sys, &expr.get_operand(0).unwrap().get_value());
-          let true_value = dump_ref!(self.sys, &expr.get_operand(1).unwrap().get_value());
-          let false_value = dump_ref!(self.sys, &expr.get_operand(2).unwrap().get_value());
-          Some(format!(
-            "logic [{}:0] {};\nassign {} = {} ? {} : {};\n\n",
-            expr.dtype().get_bits() - 1,
-            namify(expr.upcast().to_string(self.sys).as_str()),
-            namify(expr.upcast().to_string(self.sys).as_str()),
-            cond,
-            true_value,
-            false_value
-          ))
-        }
-
-        Opcode::Bind => {
-          // currently handled in AsyncCall
-          Some("".to_string())
-        }
-
-        _ => panic!("Unknown OP: {:?}", expr.get_opcode()),
+        Some(format!(
+          "logic [{}:0] {};\nassign {} = array_{}_q[{}];\n\n",
+          dtype.get_bits() - 1,
+          name,
+          name,
+          namify(array_ref.get_name()),
+          dump_ref!(self.sys, &array_idx)
+        ))
       }
+
+      Opcode::GetElementPtr => Some("".into()),
+
+      Opcode::Store => {
+        let store = expr.as_sub::<instructions::Store>().unwrap();
+        let gep = store.pointer();
+        let (array_ref, array_idx) = { (gep.array(), gep.index()) };
+        let array_name = namify(array_ref.get_name());
+        match self.array_drivers.get_mut(&array_name) {
+          Some(ads) => {
+            ads.insert(self.current_module.clone());
+          }
+          None => {
+            self.array_drivers.insert(
+              array_name.clone(),
+              HashSet::from([self.current_module.clone()]),
+            );
+          }
+        }
+        Some(format!(
+          "assign array_{}_w = trigger{};\nassign array_{}_d = {};\nassign array_{}_widx = {};\n\n",
+          array_name,
+          (self.pred.clone().and_then(|p| Some(format!(" && {}", p)))).unwrap_or("".to_string()),
+          array_name,
+          dump_ref!(self.sys, &store.value()),
+          array_name,
+          dump_ref!(self.sys, &array_idx)
+        ))
+      }
+
+      Opcode::FIFOPush => {
+        let push = expr.as_sub::<instructions::FIFOPush>().unwrap();
+        let fifo = push.fifo();
+        let fifo_name = namify(
+          format!(
+            "{}_{}",
+            fifo
+              .get_parent()
+              .as_ref::<Module>(self.sys)
+              .unwrap()
+              .get_name(),
+            fifo_name!(fifo)
+          )
+          .as_str(),
+        );
+        match self.fifo_drivers.get_mut(&fifo_name) {
+          Some(fds) => {
+            fds.insert(self.current_module.clone());
+          }
+          None => {
+            self.fifo_drivers.insert(
+              fifo_name.clone(),
+              HashSet::from([self.current_module.clone()]),
+            );
+          }
+        }
+        match self.fifo_pushes.get_mut(&fifo_name) {
+          Some(fps) => fps.push((
+            self.pred.clone().unwrap_or("".to_string()),
+            dump_ref!(self.sys, &push.value()),
+          )),
+          None => {
+            self.fifo_pushes.insert(
+              fifo_name.clone(),
+              vec![(
+                self.pred.clone().unwrap_or("".to_string()),
+                dump_ref!(self.sys, &push.value()),
+              )],
+            );
+          }
+        }
+        Some("".to_string())
+      }
+
+      Opcode::FIFOField { field } => {
+        let name = namify(expr.upcast().to_string(self.sys).as_str());
+        let get_field = expr.as_sub::<instructions::FIFOField>().unwrap();
+        let fifo = get_field.fifo();
+        let fifo_name = fifo_name!(fifo);
+        match field {
+          subcode::FIFO::Valid => Some(format!(
+            "logic {};\nassign {} = fifo_{}_pop_valid;\n\n",
+            name, name, fifo_name
+          )),
+          subcode::FIFO::Peek => Some(format!(
+            "logic [{}:0] {};\nassign {} = fifo_{}_pop_data;\n\n",
+            fifo.scalar_ty().get_bits() - 1,
+            name,
+            name,
+            fifo_name
+          )),
+          subcode::FIFO::AlmostFull => todo!(),
+        }
+      }
+
+      Opcode::AsyncCall => {
+        let call = expr.as_sub::<instructions::AsyncCall>().unwrap();
+        let module = {
+          let bind = call.bind();
+          bind.callee()
+        };
+        let module = module.as_ref::<Module>(self.sys).unwrap();
+        let module_name = namify(module.get_name());
+        match self.trigger_drivers.get_mut(&module_name) {
+          Some(tds) => {
+            tds.insert(self.current_module.clone());
+          }
+          None => {
+            self.trigger_drivers.insert(
+              module_name.clone(),
+              HashSet::from([self.current_module.clone()]),
+            );
+          }
+        }
+        match self.triggers.get_mut(&module_name) {
+          Some(trgs) => trgs.push(self.pred.clone().unwrap_or("".to_string())),
+          None => {
+            self.triggers.insert(
+              module_name.clone(),
+              vec![self.pred.clone().unwrap_or("".to_string())],
+            );
+          }
+        }
+        Some("".to_string())
+      }
+
+      Opcode::Slice => {
+        let dbits = expr.dtype().get_bits() - 1;
+        let name = namify(expr.upcast().to_string(self.sys).as_str());
+        let slice = expr.as_sub::<instructions::Slice>().unwrap();
+        let a = dump_ref!(self.sys, &slice.x());
+        let l = dump_ref!(self.sys, &slice.l_intimm().upcast());
+        let r = dump_ref!(self.sys, &slice.r_intimm().upcast());
+        Some(format!(
+          "logic [{}:0] {};\nassign {} = {}[{}:{}];\n\n",
+          dbits, name, name, a, r, l
+        ))
+      }
+
+      Opcode::Cast { cast } => {
+        let a = dump_ref!(self.sys, &expr.get_operand(0).unwrap().get_value());
+        match cast {
+          subcode::Cast::Cast | subcode::Cast::ZExt => Some(format!(
+            "logic [{}:0] {};\nassign {} = {};\n\n",
+            expr.dtype().get_bits() - 1,
+            namify(expr.upcast().to_string(self.sys).as_str()),
+            namify(expr.upcast().to_string(self.sys).as_str()),
+            a
+          )),
+          subcode::Cast::SExt => {
+            let src_ref = expr.get_operand(0).unwrap();
+            let src = src_ref.get_value();
+            let src_dtype = src.get_dtype(expr.sys).unwrap();
+            let dest_dtype = expr.dtype();
+            let a = dump_ref!(self.sys, src);
+            if src_dtype.is_int()
+              && src_dtype.is_signed()
+              && dest_dtype.is_int()
+              && dest_dtype.is_signed()
+              && dest_dtype.get_bits() > src_dtype.get_bits()
+            {
+              // perform sext
+              Some(format!(
+                "logic [{}:0] {};\nassign {} = {{{}'{{{}[{}]}}, {}}};\n\n",
+                expr.dtype().get_bits() - 1,
+                namify(expr.upcast().to_string(self.sys).as_str()),
+                namify(expr.upcast().to_string(self.sys).as_str()),
+                dest_dtype.get_bits() - src_dtype.get_bits(),
+                a,
+                src_dtype.get_bits() - 1,
+                a
+              ))
+            } else {
+              Some(format!(
+                "logic [{}:0] {};\nassign {} = {};\n\n",
+                expr.dtype().get_bits() - 1,
+                namify(expr.upcast().to_string(self.sys).as_str()),
+                namify(expr.upcast().to_string(self.sys).as_str()),
+                a
+              ))
+            }
+          }
+        }
+      }
+
+      Opcode::Select => {
+        let dbits = expr.dtype().get_bits() - 1;
+        let name = namify(expr.upcast().to_string(self.sys).as_str());
+        let select = expr.as_sub::<instructions::Select>().unwrap();
+        let cond = dump_ref!(self.sys, &select.cond());
+        let true_value = dump_ref!(self.sys, &select.true_value());
+        let false_value = dump_ref!(self.sys, &select.false_value());
+        Some(format!(
+          "logic [{}:0] {};\nassign {} = {} ? {} : {};\n\n",
+          dbits, name, name, cond, true_value, false_value
+        ))
+      }
+
+      Opcode::Bind => {
+        // currently handled in AsyncCall
+        Some("".to_string())
+      }
+
+      _ => panic!("Unknown OP: {:?}", expr.get_opcode()),
     }
   }
 }
@@ -1564,7 +1541,7 @@ pub fn elaborate(sys: &SysBuilder, config: &Config) -> Result<(), Error> {
 
   for module in vd.sys.module_iter() {
     vd.current_module = namify(module.get_name()).to_string();
-    fd.write(vd.visit_module(&module).unwrap().as_bytes())?;
+    fd.write(vd.visit_module(module).unwrap().as_bytes())?;
   }
 
   vd.dump_runtime(fd, config.sim_threshold)?;
