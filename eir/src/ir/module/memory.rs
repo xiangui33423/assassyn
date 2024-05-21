@@ -8,6 +8,7 @@ use super::Attribute;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct MemoryParams {
+  pub array: BaseNode,
   pub width: usize,
   pub depth: usize,
   pub lat: RangeInclusive<usize>,
@@ -17,6 +18,7 @@ pub struct MemoryParams {
 impl Default for MemoryParams {
   fn default() -> Self {
     Self {
+      array: BaseNode::unknown(),
       width: 0,
       depth: 0,
       lat: 0..=0,
@@ -27,12 +29,14 @@ impl Default for MemoryParams {
 
 impl MemoryParams {
   pub fn new(
+    array: BaseNode,
     width: usize,
     depth: usize,
     lat: RangeInclusive<usize>,
     init_file: Option<String>,
   ) -> Self {
     Self {
+      array,
       width,
       depth,
       lat,
@@ -109,7 +113,7 @@ impl SysBuilder {
     self.set_current_ip(new_ip);
 
     inliner(self, module, write, rdata);
-    let param = MemoryParams::new(width, depth, lat, init_file);
+    let param = MemoryParams::new(array, width, depth, lat, init_file);
     module
       .as_mut::<Module>(self)
       .unwrap()
