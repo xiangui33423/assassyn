@@ -2,12 +2,10 @@
 
 use std::{collections::HashMap, fmt::Display, hash::Hash};
 
-use crate::ir::{
-  instructions::GetElementPtr, ir_printer::IRPrinter, module::Attribute, node::*, visitor::Visitor,
-  *,
-};
+use crate::ir::{ir_printer::IRPrinter, module::Attribute, node::*, visitor::Visitor, *};
 
 use self::{
+  data::ArrayAttr,
   expr::subcode::{self, Binary},
   instructions::Bind,
   user::Operand,
@@ -341,28 +339,6 @@ impl SysBuilder {
     key
   }
 
-  /// The helper function to create a handle to an array access.
-  ///
-  /// # Arguments
-  ///
-  /// * `array` - The array to be accessed.
-  /// * `idx` - The index to be accessed.
-  pub fn create_array_ptr(&mut self, array: BaseNode, idx: BaseNode) -> BaseNode {
-    assert_eq!(array.get_kind(), NodeKind::Array);
-    let dtype = idx.get_dtype(self).unwrap();
-    match dtype {
-      DataType::Int(_) | DataType::UInt(_) => {}
-      _ => panic!("Invalid index type {}", dtype.to_string()),
-    }
-    let res = self.create_expr(
-      DataType::void(),
-      Opcode::GetElementPtr,
-      vec![array, idx],
-      true,
-    );
-    res
-  }
-
   pub fn create_log(&mut self, fmt: BaseNode, mut args: Vec<BaseNode>) -> BaseNode {
     assert_eq!(fmt.get_kind(), NodeKind::StrImm);
     args.insert(0, fmt);
@@ -498,6 +474,7 @@ impl SysBuilder {
     name: &str,
     size: usize,
     init: Option<Vec<BaseNode>>,
+    attrs: Vec<ArrayAttr>,
   ) -> BaseNode {
     let array_name = self.symbol_table.identifier(name);
     if let Some(init) = &init {
@@ -506,7 +483,7 @@ impl SysBuilder {
         assert_eq!(x.get_dtype(self).unwrap(), ty);
       });
     }
-    let instance = Array::new(ty.clone(), array_name.clone(), size, init);
+    let instance = Array::new(ty.clone(), array_name.clone(), size, init, attrs);
     let key = self.insert_element(instance);
     self.global_symbols.insert(array_name, key.clone());
     key
@@ -646,19 +623,24 @@ impl SysBuilder {
     res
   }
 
+  fn indexable(&self, idx: BaseNode) -> bool {
+    let dtype = idx.get_dtype(self).unwrap();
+    match dtype {
+      DataType::Int(_) | DataType::UInt(_) | DataType::Bits(_) => true,
+      _ => false,
+    }
+  }
+
   /// Create a read operation on an array.
   ///
   /// # Arguments
   /// * `ptr` - The pointer to the array element.
   /// * `cond` - The condition of reading the array. If None is given, the read is unconditional.
-  pub fn create_array_read<'elem>(&mut self, ptr: BaseNode) -> BaseNode {
-    let (array, dtype) = {
-      let gep = ptr.as_expr::<GetElementPtr>(self).unwrap();
-      let array = gep.array();
-      let dtype = array.scalar_ty();
-      (array.upcast(), dtype)
-    };
-    let res = self.create_expr(dtype, Opcode::Load, vec![ptr.clone()], true);
+  pub fn create_array_read<'elem>(&mut self, array: BaseNode, idx: BaseNode) -> BaseNode {
+    assert!(self.indexable(idx));
+    assert!(matches!(array.get_kind(), NodeKind::Array));
+    let dtype = array.as_ref::<Array>(self).unwrap().scalar_ty();
+    let res = self.create_expr(dtype, Opcode::Load, vec![array, idx], true);
     self.insert_external_interface(array.clone(), res.clone(), 0);
     res
   }
@@ -669,22 +651,17 @@ impl SysBuilder {
   /// * `ptr` - The pointer to the array element.
   /// * `value` - The value to be written.
   /// * `cond` - The condition of writing the array. If None is given, the write is unconditional.
-  pub fn create_array_write(&mut self, ptr: BaseNode, value: BaseNode) -> BaseNode {
-    let array = {
-      let gep = ptr.as_expr::<GetElementPtr>(self).unwrap();
-      let array = gep.array();
-      let dtype = array.scalar_ty();
-      assert_eq!(
-        value.get_dtype(self).unwrap(),
-        dtype,
-        "Cannot write {:?} with type {:?} to an array with type {:?}",
-        value.to_string(self),
-        value.get_dtype(self).unwrap(),
-        dtype
-      );
-      array.upcast()
-    };
-    let operands = vec![ptr.clone(), value.clone()];
+  pub fn create_array_write(
+    &mut self,
+    array: BaseNode,
+    idx: BaseNode,
+    value: BaseNode,
+  ) -> BaseNode {
+    assert!(self.indexable(idx));
+    assert!(matches!(array.get_kind(), NodeKind::Array));
+    let dtype = array.as_ref::<Array>(self).unwrap().scalar_ty();
+    assert_eq!(dtype, value.get_dtype(self).unwrap());
+    let operands = vec![array, idx, value];
     let res = self.create_expr(DataType::void(), Opcode::Store, operands, true);
     self.insert_external_interface(array, res.clone(), 0);
     res

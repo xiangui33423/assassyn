@@ -100,8 +100,8 @@ pub(crate) fn emit_expr_body(expr: &ast::expr::Expr) -> syn::Result<proc_macro2:
       let res = emit_expr_term(term)?;
       if let ExprTerm::ArrayAccess(_) = term {
         Ok(quote_spanned! { term.span() => {
-          let ptr = { #res };
-          sys.create_array_read(ptr)
+          let (array, idx) = { #res };
+          sys.create_array_read(array, idx)
         }})
       } else {
         Ok(res)
@@ -122,8 +122,8 @@ pub(crate) fn emit_expr_body(expr: &ast::expr::Expr) -> syn::Result<proc_macro2:
       }
       Ok(res)
     }
-    //(DType, syn::LitInt, Option<Punctuated<ExprTerm, Token![,]>>)
-    expr::Expr::ArrayAlloc((ty, size, init)) => {
+    //("array", DType, syn::LitInt, Option<Punctuated<ExprTerm, Token![,]>>)
+    expr::Expr::ArrayAlloc((tok, ty, size, init, attrs)) => {
       let ty = emit_type(ty)?;
       let (init_values, init_list) = if let Some(init) = init {
         let mut init_values = Punctuated::new();
@@ -142,12 +142,20 @@ pub(crate) fn emit_expr_body(expr: &ast::expr::Expr) -> syn::Result<proc_macro2:
           quote_spanned! { init_span => Some(vec![#init_list]) },
         )
       } else {
-        (None, quote_spanned! { ty.span() => None })
+        (None, quote_spanned! { tok.span() => None })
       };
+      let mut attr_list: Punctuated<_, Token![,]> = Punctuated::new();
+      attrs.iter().for_each(|attr| {
+        let id = camelize(&attr.to_string());
+        let id = syn::Ident::new(&id, attr.span());
+        attr_list.push_value(quote! { eir::ir::data::ArrayAttr::#id });
+        attr_list.push_punct(Token![,](attr.span()));
+      });
+
       Ok(quote_spanned! {
-        ty.span() => {
+        tok.span() => {
           #init_values
-          sys.create_array(#ty, "array", #size, #init_list)
+          sys.create_array(#ty, "array", #size, #init_list, vec![#attr_list])
         }
       })
     }
@@ -182,8 +190,11 @@ fn emit_array_access(aa: &ArrayAccess) -> syn::Result<proc_macro2::TokenStream> 
   let idx = emit_expr_body(aa.idx.as_ref())?;
   // TODO(@were): Better span handling later.
   Ok(quote_spanned! { aa.id.span() => {
-    let idx = { #idx }.clone();
-    sys.create_array_ptr(#id.clone(), idx)
+    {
+      let array = { #id }.clone();
+      let idx = { #idx }.clone();
+      (array, idx)
+    }
   }})
 }
 
@@ -250,9 +261,9 @@ pub(crate) fn emit_parsed_instruction(inst: &Statement) -> syn::Result<TokenStre
         let array_ptr = emit_array_access(aa)?;
         let right = emit_expr_body(right)?;
         quote! {{
-          let ptr = #array_ptr;
+          let (array, idx) = #array_ptr;
           let value = #right;
-          sys.create_array_write(ptr, value);
+          sys.create_array_write(array, idx, value);
         }}
       }
       expr::LValue::IdentList(l) => {
