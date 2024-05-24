@@ -84,8 +84,15 @@ pub(crate) fn emit_expr_body(expr: &ast::expr::Expr) -> syn::Result<proc_macro2:
             }
             (operand_def, operand_use)
           };
-          let operand_use = if Opcode::from_str(&op.to_string()).unwrap().arity().is_none() {
-            quote! { vec![#operand_use] }
+          let operand_use = if matches!(
+            Opcode::from_str(&op.to_string()).unwrap(),
+            Opcode::Select1Hot
+          ) {
+            let rev = operand_use
+              .into_iter()
+              .rev()
+              .collect::<Punctuated<_, Token![,]>>();
+            quote! { vec![#rev] }
           } else {
             quote! { #operand_use }
           };
@@ -337,14 +344,12 @@ pub(crate) fn emit_parsed_instruction(inst: &Statement) -> syn::Result<TokenStre
           let cond = emit_expr_body(cond)?;
           quote! {
             let cond = { #cond }.clone();
-            let block_pred = eir::ir::block::BlockKind::Condition(cond);
-            let block = sys.create_block(block_pred);
+            let block = sys.create_conditional_block(cond);
           }
         }
         BodyPred::Cycle(cycle) => quote! {
           let cycle = #cycle.clone();
-          let block_pred = eir::ir::block::BlockKind::Cycle(cycle);
-          let block = sys.create_block(block_pred);
+          let block = sys.create_cycled_block(cycle);
         },
         _ => panic!("wait_until should only be the root of a module"),
       };
