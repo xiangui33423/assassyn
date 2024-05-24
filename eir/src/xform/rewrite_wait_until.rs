@@ -1,5 +1,6 @@
 use crate::{
   builder::SysBuilder,
+  created_here,
   ir::{
     node::{BaseNode, IsElement, ModuleRef},
     visitor::Visitor,
@@ -70,7 +71,7 @@ pub(super) fn rewrite_wait_until(sys: &mut SysBuilder) {
         .into_iter()
         .fold(None, |acc, v| match acc {
           None => Some(v),
-          Some(acc) => Some(sys.create_bitwise_and(acc, v)),
+          Some(acc) => Some(sys.create_bitwise_and(created_here!(), acc, v)),
         })
         .unwrap();
       // FIXME: Use the real condition.

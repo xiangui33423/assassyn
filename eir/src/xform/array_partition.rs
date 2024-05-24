@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::{
   builder::SysBuilder,
+  created_here,
   ir::{
     data::ArrayAttr,
     instructions,
@@ -101,14 +102,14 @@ pub fn rewrite_array_partitions(sys: &mut SysBuilder) {
           sys.set_insert_before(user.clone());
           let new_load = if let Ok(idx_imm) = idx.as_ref::<IntImm>(sys) {
             let idx = idx_imm.get_value();
-            sys.create_array_read(partition[idx as usize], zero)
+            sys.create_array_read(created_here!(), partition[idx as usize], zero)
           } else {
-            let p0 = sys.create_array_read(partition[0], zero);
+            let p0 = sys.create_array_read(created_here!(), partition[0], zero);
             (1..size).fold(p0, |acc, x| {
               let cur = sys.get_const_int(idx_ty.clone(), x as u64);
-              let value = sys.create_array_read(partition[x], zero);
-              let cond = sys.create_eq(idx.clone(), cur);
-              sys.create_select(cond, value, acc)
+              let value = sys.create_array_read(created_here!(), partition[x], zero);
+              let cond = sys.create_eq(created_here!(), idx.clone(), cur);
+              sys.create_select(created_here!(), cond, value, acc)
             })
           };
           sys.replace_all_uses_with(user.clone(), new_load);
@@ -116,15 +117,20 @@ pub fn rewrite_array_partitions(sys: &mut SysBuilder) {
         Opcode::Store => {
           if let Ok(idx_imm) = idx.as_ref::<IntImm>(sys) {
             let idx = idx_imm.get_value();
-            sys.create_array_write(partition[idx as usize], zero, value.unwrap());
+            sys.create_array_write(
+              created_here!(),
+              partition[idx as usize],
+              zero,
+              value.unwrap(),
+            );
           } else {
             (0..size).for_each(|x| {
               sys.set_insert_before(user.clone());
               let cur = sys.get_const_int(idx_ty.clone(), x as u64);
-              let cond = sys.create_eq(idx.clone(), cur);
+              let cond = sys.create_eq(created_here!(), idx.clone(), cur);
               let block = sys.create_block(BlockKind::Condition(cond));
               sys.set_current_block(block);
-              sys.create_array_write(partition[x], zero, value.unwrap());
+              sys.create_array_write(created_here!(), partition[x], zero, value.unwrap());
             });
           }
         }

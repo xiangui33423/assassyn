@@ -16,6 +16,27 @@ use super::symbol_table::SymbolTable;
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub struct InsertPoint(pub BaseNode, pub BaseNode, pub Option<usize>);
 
+#[macro_export]
+macro_rules! created_here {
+  () => {
+    $crate::builder::system::Filesite {
+      file: file!(),
+      line: line!() as usize,
+    }
+  };
+}
+
+pub struct Filesite {
+  pub file: &'static str,
+  pub line: usize,
+}
+
+impl Display for Filesite {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    write!(f, "@{}:{}: ", self.file, self.line)
+  }
+}
+
 impl InsertPoint {
   pub fn next(&self, sys: &SysBuilder) -> Option<Self> {
     let InsertPoint(module, block, at) = self;
@@ -91,16 +112,18 @@ impl PortInfo {
 /// is always executed.
 macro_rules! create_arith_op_impl {
   (binary, $func_name:ident, $opcode: expr) => {
-    pub fn $func_name(&mut self, a: BaseNode, b: BaseNode) -> BaseNode {
-      let res_ty = self.combine_types($opcode, &a, &b);
-      self.create_expr(res_ty, $opcode, vec![a, b], true)
+    pub fn $func_name(&mut self, site: Filesite, a: BaseNode, b: BaseNode) -> BaseNode {
+      match self.combine_types($opcode, &a, &b) {
+        Ok(res_ty) => self.create_expr(res_ty, $opcode, vec![a, b], true),
+        Err(msg) => panic!("{} {}", site, msg),
+      }
     }
   };
 
   (unary, $func_name:ident, $opcode: expr) => {
-    pub fn $func_name(&mut self, x: BaseNode) -> BaseNode {
+    pub fn $func_name(&mut self, site: Filesite, x: BaseNode) -> BaseNode {
       let res_ty = x.get_dtype(self).unwrap_or_else(|| {
-        panic!("{} has no type!", x.to_string(self));
+        panic!("{}{} has no type!", site.to_string(), x.to_string(self));
       });
       self.create_expr(res_ty, $opcode, vec![x.clone()], true)
     }
@@ -345,15 +368,51 @@ impl SysBuilder {
     self.create_expr(DataType::void(), Opcode::Log, args, true)
   }
 
+  pub fn create_select_1hot(
+    &mut self,
+    site: Filesite,
+    cond: BaseNode,
+    values: Vec<BaseNode>,
+  ) -> BaseNode {
+    let cond_ty = cond.get_dtype(self).unwrap();
+    assert_eq!(
+      cond_ty.get_bits(),
+      values.len(),
+      "{} Select1Hot value count mismatch!",
+      site
+    );
+    let v0type = values[0].get_dtype(self).unwrap();
+    for i in 1..values.len() {
+      let vitype = values[i].get_dtype(self).unwrap();
+      assert_eq!(
+        v0type, vitype,
+        "{} Select1Hot value type mismatch {:?} != {:?}",
+        site, v0type, vitype,
+      );
+    }
+    let mut args = vec![cond];
+    args.extend(values);
+    self.create_expr(v0type, Opcode::Select1Hot, args, true)
+  }
+
   pub fn create_select(
     &mut self,
+    site: Filesite,
     cond: BaseNode,
     true_val: BaseNode,
     false_val: BaseNode,
   ) -> BaseNode {
-    let ty = true_val.get_dtype(self).unwrap();
-    assert_eq!(ty, false_val.get_dtype(self).unwrap());
-    self.create_expr(ty, Opcode::Select, vec![cond, true_val, false_val], true)
+    let t_ty = true_val.get_dtype(self).unwrap();
+    let f_ty = false_val.get_dtype(self).unwrap();
+    assert_eq!(
+      t_ty,
+      f_ty,
+      "{}Select value type mismatch: {:?} and {:?}",
+      site.to_string(),
+      t_ty,
+      f_ty
+    );
+    self.create_expr(f_ty, Opcode::Select, vec![cond, true_val, false_val], true)
   }
 
   /// The helper function to create an expression.
@@ -636,8 +695,19 @@ impl SysBuilder {
   /// # Arguments
   /// * `ptr` - The pointer to the array element.
   /// * `cond` - The condition of reading the array. If None is given, the read is unconditional.
-  pub fn create_array_read<'elem>(&mut self, array: BaseNode, idx: BaseNode) -> BaseNode {
-    assert!(self.indexable(idx));
+  pub fn create_array_read<'elem>(
+    &mut self,
+    site: Filesite,
+    array: BaseNode,
+    idx: BaseNode,
+  ) -> BaseNode {
+    assert!(
+      self.indexable(idx),
+      "{} {}'s type, {:?}, is not indexable!",
+      site,
+      idx.to_string(self),
+      idx.get_dtype(self).unwrap()
+    );
     assert!(matches!(array.get_kind(), NodeKind::Array));
     let dtype = array.as_ref::<Array>(self).unwrap().scalar_ty();
     let res = self.create_expr(dtype, Opcode::Load, vec![array, idx], true);
@@ -653,14 +723,33 @@ impl SysBuilder {
   /// * `cond` - The condition of writing the array. If None is given, the write is unconditional.
   pub fn create_array_write(
     &mut self,
+    site: Filesite,
     array: BaseNode,
     idx: BaseNode,
     value: BaseNode,
   ) -> BaseNode {
-    assert!(self.indexable(idx));
-    assert!(matches!(array.get_kind(), NodeKind::Array));
+    assert!(
+      self.indexable(idx),
+      "{} {}'s type, {:?}, is not indexable!",
+      site,
+      idx.to_string(self),
+      idx.get_dtype(self).unwrap()
+    );
+    assert!(
+      matches!(array.get_kind(), NodeKind::Array),
+      "{} Expect an array, but {:?}",
+      site,
+      array
+    );
     let dtype = array.as_ref::<Array>(self).unwrap().scalar_ty();
-    assert_eq!(dtype, value.get_dtype(self).unwrap());
+    let vtype = value.get_dtype(self).unwrap_or_else(|| {
+      panic!("{} {} has no type!", site, value.to_string(self));
+    });
+    assert_eq!(
+      dtype, vtype,
+      "{} Value type mismatch {:?} != {:?}!",
+      site, dtype, vtype
+    );
     let operands = vec![array, idx, value];
     let res = self.create_expr(DataType::void(), Opcode::Store, operands, true);
     self.insert_external_interface(array, res.clone(), 0);
@@ -673,19 +762,19 @@ impl SysBuilder {
   /// * `op` - The operation code to be combined.
   /// * `a` - The lhs operand.
   /// * `b` - The rhs operand.
-  pub fn combine_types(&self, op: Opcode, a: &BaseNode, b: &BaseNode) -> DataType {
+  pub fn combine_types(&self, op: Opcode, a: &BaseNode, b: &BaseNode) -> Result<DataType, String> {
     let aty = a.get_dtype(self).unwrap();
     let bty = b.get_dtype(self).unwrap();
     if op.is_cmp() {
       if aty.get_bits() != bty.get_bits() {
-        panic!(
+        return Err(format!(
           "Cannot compare types {} and {} for {:?}",
           aty.to_string(),
           bty.to_string(),
           op
-        );
+        ));
       }
-      return DataType::uint_ty(1);
+      return Ok(DataType::uint_ty(1));
     }
     let res = match op {
       Opcode::Binary { binop } => {
@@ -720,14 +809,14 @@ impl SysBuilder {
       _ => panic!("Unsupported opcode {:?}", op),
     };
     if let Some(res) = res {
-      res
+      Ok(res)
     } else {
-      panic!(
+      Err(format!(
         "Cannot combine types {} and {} for {:?}",
         aty.to_string(),
         bty.to_string(),
         op
-      );
+      ))
     }
   }
 
@@ -788,7 +877,7 @@ impl SysBuilder {
   }
 
   /// Create a cast operation.
-  pub fn create_bitcast(&mut self, src: BaseNode, dest_ty: DataType) -> BaseNode {
+  pub fn create_bitcast(&mut self, _: Filesite, src: BaseNode, dest_ty: DataType) -> BaseNode {
     let res = self.create_expr(
       dest_ty,
       Opcode::Cast {
@@ -810,7 +899,7 @@ impl SysBuilder {
   }
 
   /// Create a sext operation.
-  pub fn create_sext(&mut self, src: BaseNode, dest_ty: DataType) -> BaseNode {
+  pub fn create_sext(&mut self, _: Filesite, src: BaseNode, dest_ty: DataType) -> BaseNode {
     match src.get_kind() {
       NodeKind::IntImm => self.retype_imm(src, dest_ty),
       _ => self.create_expr(
@@ -825,7 +914,7 @@ impl SysBuilder {
   }
 
   /// Create a zext operation.
-  pub fn create_zext(&mut self, src: BaseNode, dest_ty: DataType) -> BaseNode {
+  pub fn create_zext(&mut self, _: Filesite, src: BaseNode, dest_ty: DataType) -> BaseNode {
     match src.get_kind() {
       NodeKind::IntImm => self.retype_imm(src, dest_ty),
       _ => self.create_expr(
@@ -840,6 +929,7 @@ impl SysBuilder {
   }
 
   pub(crate) fn dispose(&mut self, node: BaseNode) {
+    eprintln!("Dispose {:?}", node);
     self.slab.remove(node.get_key());
   }
 

@@ -348,6 +348,26 @@ impl Visitor<String> for ElaborateModule<'_, '_> {
           cond, true_value, false_value
         )
       }
+      Opcode::Select1Hot => {
+        let select1hot = expr.as_sub::<instructions::Select1Hot>().unwrap();
+        let cond = select1hot.cond();
+        let mut res = format!(
+          "{{ let cond = {}; assert!(cond.count_ones() == 1, \"Select1Hot: condition is not 1-hot\");",
+          dump_ref!(self.sys, &cond)
+        );
+        for (i, value) in select1hot.value_iter().enumerate() {
+          if i != 0 {
+            res.push_str(" else ");
+          }
+          res.push_str(&format!(
+            "if cond >> {} & 1 != 0 {{ {} }}",
+            i,
+            dump_ref!(self.sys, &value)
+          ));
+        }
+        res.push_str(" else { unreachable!() } }");
+        res
+      }
       Opcode::Cast { .. } => {
         let cast = expr.as_sub::<instructions::Cast>().unwrap();
         let src_dtype = cast.src_type();
@@ -504,8 +524,12 @@ fn dump_runtime(sys: &SysBuilder, config: &Config) -> (String, HashMap<BaseNode,
       pub fn init_vec_by_hex_file<T: Num, const N: usize>(array: &mut [T; N], init_file: &str) {
         let mut idx = 0;
         for line in read_to_string(init_file).expect("can not open hex file").lines() {
-          let line = line.trim();
-          if line.len() == 0 || line.starts_with("//") {
+          let line = if let Some(idx) = line.find("//") {
+            line[..idx].trim()
+          } else {
+            line.trim()
+          };
+          if line.len() == 0 {
             continue;
           }
           if line.starts_with("@") {
@@ -1199,18 +1223,23 @@ fn dump_main(fd: &mut File) -> Result<usize, std::io::Error> {
 
 fn elaborate_impl(sys: &SysBuilder, config: &Config) -> Result<PathBuf, std::io::Error> {
   let dir_name = config.dir_name(sys);
-  if Path::new(&dir_name).exists() {
-    if config.override_dump {
-      fs::remove_dir_all(&dir_name)?;
-      fs::create_dir_all(&dir_name)?;
-    } else {
-      eprintln!(
-        "Directory {} already exists, may possibly lead to dump failure.",
-        dir_name.to_str().unwrap()
-      );
+  let dir = Path::new(&dir_name);
+  if !dir.exists() {
+    fs::create_dir_all(&dir_name)?;
+  }
+  assert!(dir.is_dir());
+  let files = fs::read_dir(&dir_name)?;
+  if config.override_dump {
+    for elem in files {
+      let path = elem?.path();
+      if path.is_dir() {
+        fs::remove_dir_all(path)?;
+      } else {
+        fs::remove_file(path)?;
+      }
     }
   } else {
-    fs::create_dir_all(&dir_name)?;
+    assert!(files.count() == 0);
   }
   eprintln!(
     "Writing simulator code to rust project: {}",
