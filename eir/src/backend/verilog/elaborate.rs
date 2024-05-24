@@ -1415,6 +1415,18 @@ impl<'a, 'b> Visitor<String> for VerilogDumper<'a, 'b> {
         ))
       }
 
+      Opcode::Concat => {
+        let dbits = expr.dtype().get_bits() - 1;
+        let name = namify(expr.upcast().to_string(self.sys).as_str());
+        let concat = expr.as_sub::<instructions::Concat>().unwrap();
+        let a = dump_ref!(self.sys, &concat.msb());
+        let b = dump_ref!(self.sys, &concat.lsb());
+        Some(format!(
+          "logic [{}:0] {};\nassign {} = {{{}, {}}};\n\n",
+          dbits, name, name, a, b
+        ))
+      }
+
       Opcode::Cast { .. } => {
         let dbits = expr.dtype().get_bits() - 1;
         let name = namify(expr.upcast().to_string(self.sys).as_str());
