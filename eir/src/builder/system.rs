@@ -876,19 +876,6 @@ impl SysBuilder {
     res
   }
 
-  /// Create a cast operation.
-  pub fn create_bitcast(&mut self, _: Filesite, src: BaseNode, dest_ty: DataType) -> BaseNode {
-    let res = self.create_expr(
-      dest_ty,
-      Opcode::Cast {
-        cast: subcode::Cast::BitCast,
-      },
-      vec![src],
-      true,
-    );
-    res
-  }
-
   fn retype_imm(&mut self, src: BaseNode, dest_ty: DataType) -> BaseNode {
     // When dealing with immediates,
     // currently there's no difference between zext and sext,
@@ -898,34 +885,31 @@ impl SysBuilder {
     self.get_const_int(dest_ty, src.as_ref::<IntImm>(self).unwrap().get_value())
   }
 
-  /// Create a sext operation.
-  pub fn create_sext(&mut self, _: Filesite, src: BaseNode, dest_ty: DataType) -> BaseNode {
+  fn create_cast_impl(
+    &mut self,
+    src: BaseNode,
+    dest_ty: DataType,
+    subcode: subcode::Cast,
+  ) -> BaseNode {
     match src.get_kind() {
       NodeKind::IntImm => self.retype_imm(src, dest_ty),
-      _ => self.create_expr(
-        dest_ty,
-        Opcode::Cast {
-          cast: subcode::Cast::SExt,
-        },
-        vec![src],
-        true,
-      ),
+      _ => self.create_expr(dest_ty, Opcode::Cast { cast: subcode }, vec![src], true),
     }
+  }
+
+  /// Create a cast operation.
+  pub fn create_bitcast(&mut self, _: Filesite, src: BaseNode, dest_ty: DataType) -> BaseNode {
+    self.create_cast_impl(src, dest_ty, subcode::Cast::BitCast)
+  }
+
+  /// Create a sext operation.
+  pub fn create_sext(&mut self, _: Filesite, src: BaseNode, dest_ty: DataType) -> BaseNode {
+    self.create_cast_impl(src, dest_ty, subcode::Cast::SExt)
   }
 
   /// Create a zext operation.
   pub fn create_zext(&mut self, _: Filesite, src: BaseNode, dest_ty: DataType) -> BaseNode {
-    match src.get_kind() {
-      NodeKind::IntImm => self.retype_imm(src, dest_ty),
-      _ => self.create_expr(
-        dest_ty,
-        Opcode::Cast {
-          cast: subcode::Cast::ZExt,
-        },
-        vec![src],
-        true,
-      ),
-    }
+    self.create_cast_impl(src, dest_ty, subcode::Cast::ZExt)
   }
 
   pub(crate) fn dispose(&mut self, node: BaseNode) {
