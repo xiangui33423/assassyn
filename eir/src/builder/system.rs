@@ -8,7 +8,6 @@ use self::{
   data::ArrayAttr,
   expr::subcode::{self, Binary},
   instructions::Bind,
-  user::Operand,
 };
 
 use super::symbol_table::SymbolTable;
@@ -293,8 +292,8 @@ impl SysBuilder {
       let at = block_ref
         .as_ref::<Block>(self)
         .unwrap()
-        .iter()
-        .position(|x| *x == node);
+        .body_iter()
+        .position(|x| x.eq(&node));
       let module = {
         // TODO(@were): Make this a method function.
         let block = block_ref.as_ref::<Block>(self).unwrap();
@@ -437,44 +436,21 @@ impl SysBuilder {
   ) -> BaseNode {
     self.get_current_module().unwrap();
     // Wrap all the operands into Operand instances.
-    let operands = operands
-      .into_iter()
-      .map(|x| self.insert_element(Operand::new(x)))
-      .collect();
     let instance = Expr::new(
       dtype.clone(),
       opcode,
-      operands,
+      vec![BaseNode::unknown(); operands.len()],
       self.inesert_point.1.clone(),
     );
     let res = self.insert_element(instance);
     if insert {
       self.insert_at_ip(res);
     }
-    let operands = res
-      .as_ref::<Expr>(self)
-      .unwrap()
-      .operand_iter()
-      .map(|x| x.upcast())
-      .collect::<Vec<_>>();
-    operands.into_iter().for_each(|x| {
-      let mut operand = x.as_mut::<Operand>(self).unwrap();
-      operand.get_mut().set_user(res);
-      self.add_user(x.clone());
+    let mut expr_mut = self.get_mut::<Expr>(&res).unwrap();
+    operands.into_iter().enumerate().for_each(|(i, x)| {
+      expr_mut.set_operand(i, x);
     });
     res
-  }
-
-  fn insert_external_interface(&mut self, ext: BaseNode, expr: BaseNode, operand_idx: usize) {
-    let cur_mod = self.get_current_module().unwrap().upcast();
-    let operand = expr
-      .as_ref::<Expr>(self)
-      .unwrap()
-      .get_operand(operand_idx)
-      .unwrap()
-      .upcast();
-    let mut mod_mut = self.get_mut::<Module>(&cur_mod).unwrap();
-    mod_mut.insert_external_interface(ext, operand);
   }
 
   /// The helper function to insert an element into the current insert point.
@@ -676,9 +652,6 @@ impl SysBuilder {
     // Create the expression.
     let res = self.create_expr(DataType::void(), Opcode::FIFOPush, vec![port, value], true);
 
-    // Maintain the external interface redundancy when it is determined.
-    self.insert_external_interface(port, res.clone(), 0);
-
     res
   }
 
@@ -711,7 +684,6 @@ impl SysBuilder {
     assert!(matches!(array.get_kind(), NodeKind::Array));
     let dtype = array.as_ref::<Array>(self).unwrap().scalar_ty();
     let res = self.create_expr(dtype, Opcode::Load, vec![array, idx], true);
-    self.insert_external_interface(array.clone(), res.clone(), 0);
     res
   }
 
@@ -752,7 +724,6 @@ impl SysBuilder {
     );
     let operands = vec![array, idx, value];
     let res = self.create_expr(DataType::void(), Opcode::Store, operands, true);
-    self.insert_external_interface(array, res.clone(), 0);
     res
   }
 
@@ -918,6 +889,31 @@ impl SysBuilder {
 
   pub(crate) fn contains(&self, node: &BaseNode) -> bool {
     self.slab.contains(node.get_key())
+  }
+
+  pub fn move_to_new_parent(&mut self, node: BaseNode, new_parent: BaseNode, at: Option<usize>) {
+    let old_parent = node.get_parent(self).unwrap();
+    let mut block_mut = self.get_mut::<Block>(&old_parent).unwrap();
+    block_mut.erase(&node);
+    let mut new_parent_mut = self.get_mut::<Block>(&new_parent).unwrap();
+    new_parent_mut.insert_at(at, node);
+    match node.get_kind() {
+      NodeKind::Block => {
+        node
+          .as_mut::<Block>(self)
+          .unwrap()
+          .get_mut()
+          .set_parent(new_parent);
+      }
+      NodeKind::Expr => {
+        node
+          .as_mut::<Expr>(self)
+          .unwrap()
+          .get_mut()
+          .set_parent(new_parent);
+      }
+      _ => panic!("Unsupported node kind!"),
+    }
   }
 }
 
