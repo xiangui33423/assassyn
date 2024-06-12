@@ -33,6 +33,19 @@ class Expr(object):
     def __rand__(self, other):
         return BinaryOp(BinaryOp.BITWISE_AND, self, other)
 
+    def is_fifo_related(self):
+        return self.opcode // 100 == 3
+
+    def is_binary(self):
+        return self.opcode // 100 == 2
+
+    def is_unary(self):
+        return self.opcode // 100 == 1
+
+    def is_valued(self):
+        other = isinstance(self, (FIFOField, FIFOPop, ArrayRead))
+        return other or self.is_binary() or self.is_unary()
+
 class BinaryOp(Expr):
 
     # Binary operations
@@ -44,8 +57,6 @@ class BinaryOp(Expr):
     BITWISE_AND = 206
     BITWISE_OR  = 207
     BITWISE_XOR = 208
-    # Array operations
-    ARRAY_READ = 400
 
     OPERATORS = {
       ADD: '+',
@@ -65,58 +76,95 @@ class BinaryOp(Expr):
 
     def __repr__(self):
         lval = self.as_operand()
-        if self.opcode == self.ARRAY_READ:
-            return f'{lval} = {self.lhs.as_operand()}[{self.rhs.as_operand()}]'
         lhs = self.lhs.as_operand()
         rhs = self.rhs.as_operand()
         return f'{lval} = {lhs} {self.OPERATORS[self.opcode]} {rhs}'
 
-class SideEffect(Expr):
+class FIFOPush(Expr):
 
-    # Side effects
     FIFO_PUSH  = 302
-    FIFO_POP   = 301
+
+    def __init__(self, fifo, val):
+        super().__init__(FIFOPush.FIFO_PUSH)
+        self.fifo = fifo
+        self.val = val
+        self.bind = None
+
+    def __repr__(self):
+        handle = self.as_operand()
+        return f'{self.fifo.as_operand()}.push({self.val.as_operand()}) // handle = {handle}'
+
+class FIFOPop(Expr):
+
+    FIFO_POP = 301
+
+    def __init__(self, fifo):
+        super().__init__(FIFOPop.FIFO_POP)
+        self.fifo = fifo
+
+    def __repr__(self):
+        return f'{self.as_operand()} = {self.fifo.as_operand()}.pop()'
+
+
+class ArrayWrite(Expr):
+
     ARRAY_WRITE = 401
+
+    def __init__(self, arr, idx, val):
+        super().__init__(ArrayWrite.ARRAY_WRITE)
+        self.arr = arr
+        self.idx = idx
+        self.val = val
+
+    def __repr__(self):
+        return f'{self.arr.as_operand()}[{self.idx.as_operand()}] = {self.val.as_operand()}'
+
+
+class ArrayRead(Expr):
+
+    ARRAY_READ = 400
+
+    def __init__(self, arr, idx):
+        super().__init__(ArrayRead.ARRAY_READ)
+        self.arr = arr
+        self.idx = idx
+
+    def __repr__(self):
+        return f'{self.as_operand()} = {self.arr.as_operand()}[{self.idx.as_operand()}]'
+
+class Log(Expr):
+
     LOG = 600
 
-    def __init__(self, opcode, *args):
-        super().__init__(opcode)
+    def __init__(self, *args):
+        super().__init__(Log.LOG)
         self.args = args
 
     def __repr__(self):
-        if self.opcode == self.LOG:
-            fmt = repr(self.args[0])
-            return f'log({fmt}, {", ".join(i.as_operand() for i in self.args[1:])})'
-        elif self.opcode == self.ARRAY_WRITE:
-            arr = self.args[0].as_operand()
-            idx = self.args[1].as_operand()
-            val = self.args[2].as_operand()
-            return f'{arr}[{idx}] = {val}'
-        # FIFO_PUSH
-        elif self.opcode == self.FIFO_PUSH:
-            fifo = self.args[0].as_operand()
-            val = self.args[1].as_operand()
-            return f'{fifo}.push({val})'
-        # FIFO_POP
-        assert self.opcode == self.FIFO_POP
-        fifo = self.args[0].as_operand()
-        return f'{fifo}.pop()'
+        fmt = repr(self.args[0])
+        return f'log({fmt}, {", ".join(i.as_operand() for i in self.args[1:])})'
 
 @ir_builder(node_type='expr')
 def log(*args):
     assert isinstance(args[0], str)
-    return SideEffect(SideEffect.LOG, *args)
+    return Log(*args)
 
 class UnaryOp(Expr):
     # Unary operations
     NEG  = 100
     FLIP = 101
-    # Call operations
-    ASYNC_CALL = 500
+
+    OPERATORS = {
+        NEG: '-',
+        FLIP: '~',
+    }
 
     def __init__(self, opcode, x):
         super().__init__(opcode)
         self.x = x
+
+    def __repr__(self):
+        return f'{self.as_operand()} = {self.OPERATORS[self.opcode]}{self.x.as_operand()}'
 
 class FIFOField(Expr):
     # FIFO operations
@@ -127,30 +175,48 @@ class FIFOField(Expr):
         super().__init__(opcode)
         self.fifo = fifo
 
-class BindInst(Expr):
 
-    BIND = 51
+class Bind(Expr):
+    BIND = 501
 
+    def _push(self, **kwargs):
+        for k, v in kwargs.items():
+            push = getattr(self.callee, k).push(v)
+            push.bind = self
+            self.pushes.append(push)
+
+    @ir_builder(node_type='expr')
     def bind(self, **kwargs):
-        self.args.update(kwargs)
+        self._push(**kwargs)
+        return self
+
+    @ir_builder(node_type='expr')
+    def async_called(self):
+        return AsyncCall(self)
 
     def __init__(self, callee, **kwargs):
-        super().__init__(0)
+        super().__init__(Bind.BIND)
         self.callee = callee
-        self.args = dict(kwargs)
+        self.pushes = []
+        self._push(**kwargs)
 
-def is_fifo_related(opcode):
-    return opcode // 100 == 3
+    def __repr__(self):
+        args = ', '.join(f'{v.as_operand()} /* {v.fifo.as_operand()}={v.val.as_operand()} */' for v in self.pushes)
+        callee = self.callee.as_operand()
+        lval = self.as_operand()
+        return f'{lval} = {callee}.bind[ {args} ]'
 
-def is_binary(opcode):
-    return opcode // 100 == 2
+class AsyncCall(Expr):
+    # Call operations
+    ASYNC_CALL = 500
 
-def is_unary(opcode):
-    return opcode // 100 == 1
+    def __init__(self, bind: Bind):
+        super().__init__(AsyncCall.ASYNC_CALL)
+        self.bind = bind
 
-def is_valued(opcode):
-    other = [FIFOField.FIFO_PEEK, FIFOField.FIFO_VALID, BinaryOp.ARRAY_READ, SideEffect.FIFO_POP]
-    return is_binary(opcode) or is_binary(opcode) or opcode in other
+    def __repr__(self):
+        bind = self.bind.as_operand()
+        return f'async_call {bind}'
 
 CG_OPCODE = {
     BinaryOp.ADD: 'add',
@@ -161,7 +227,6 @@ CG_OPCODE = {
     BinaryOp.BITWISE_AND: 'bitwise_and',
     BinaryOp.BITWISE_OR: 'bitwise_or',
     BinaryOp.BITWISE_XOR: 'bitwise_xor',
-    BinaryOp.ARRAY_READ: 'array_read',
 
     UnaryOp.FLIP: 'flip',
     UnaryOp.NEG: 'neg',
@@ -169,14 +234,22 @@ CG_OPCODE = {
     FIFOField.FIFO_PEEK: 'peek',
     FIFOField.FIFO_VALID: 'valid',
 
-    SideEffect.FIFO_POP: 'pop',
-    SideEffect.FIFO_PUSH: 'push',
-    SideEffect.ARRAY_WRITE: 'array_write',
-    SideEffect.LOG: 'log',
+    FIFOPop.FIFO_POP: 'pop',
+    FIFOPush.FIFO_PUSH: 'push',
+
+    ArrayRead.ARRAY_READ: 'array_read',
+    ArrayWrite.ARRAY_WRITE: 'array_write',
+
+    AsyncCall.ASYNC_CALL: 'async_call',
+
+    Log.LOG: 'log',
 }
 
-def opcode_to_ib(opcode):
-    if is_fifo_related(opcode):
+def opcode_to_ib(node: Expr):
+    opcode = node.opcode
+    if node.opcode == Bind.BIND:
+        return ''
+    if node.is_fifo_related():
         return f'create_fifo_{CG_OPCODE[opcode]}'
     return f'create_{CG_OPCODE[opcode]}'
 

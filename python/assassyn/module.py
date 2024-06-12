@@ -4,7 +4,7 @@ import inspect
 from .builder import Singleton, ir_builder
 from .dtype import DType
 from .block import Block
-from .expr import Expr, BindInst, SideEffect, FIFOField
+from .expr import Expr, Bind, FIFOPop, FIFOField, FIFOPush, AsyncCall
 
 
 @decorator
@@ -22,6 +22,7 @@ def constructor(func, *args, **kwargs):
     for k, v in args[0].__dict__.items():
         if isinstance(v, Port):
             v.name = k
+            v.module = args[0]
 
 class Module(object):
     IMPLICIT_POP = 0
@@ -29,26 +30,40 @@ class Module(object):
 
     def __init__(self):
         self.name = type(self).__name__
+        if self.name != 'Driver':
+            self.name = self.name + hex(id(self))[-5:-1]
         self.body = None
         self.linearize_ptr = {}
 
+    @property
+    def ports(self):
+        return [v for _, v in self.__dict__.items() if isinstance(v, Port)]
+
     @ir_builder(node_type='expr')
-    def async_called(self, *args, **kwargs):
-        return Expr(Expr.ASYNC_CALL, self, *args, **args)
+    def async_called(self, **kwargs):
+        bind = self.bind(**kwargs)
+        return AsyncCall(bind)
 
     @ir_builder(node_type='expr')
     def bind(self, **kwargs):
-        return BindInst(self, **kwargs)
+        return Bind(self, **kwargs)
+
+    def as_operand(self):
+        return self.name
 
     def __repr__(self):
         Singleton.linearize_ptr = self.linearize_ptr
+        ports = '\n    '.join(repr(v) for v in self.ports)
+        if ports:
+            ports = f'{{\n    {ports}\n  }} '
         body = '    ' + '\n    '.join(repr(elem) for elem in self.body.body)
-        return f'  module {self.name} {{\n{body}\n  }}'
+        return f'  module {self.name} {ports}{{\n{body}\n  }}'
 
 class Port(object):
     def __init__(self, dtype: DType):
         assert isinstance(dtype, DType)
         self.dtype = dtype
+        self.name = self.module = None
 
     @ir_builder(node_type='expr')
     def valid(self):
@@ -60,11 +75,17 @@ class Port(object):
 
     @ir_builder(node_type='expr')
     def pop(self):
-        return SideEffect(Expr.FIFO_POP, self)
+        return FIFOPop(self)
 
     @ir_builder(node_type='expr')
-    def push(self):
-        return SideEffect(Expr.FIFO_PUSH, self)
+    def push(self, v):
+        return FIFOPush(self, v)
+
+    def __repr__(self):
+        return f'{self.name}: port<{self.dtype}>'
+
+    def as_operand(self):
+        return f'{self.module.name}.{self.name}'
 
 @decorator
 def combinational(func, port=Module.IMPLICIT_POP, *args, **kwargs):
@@ -72,7 +93,16 @@ def combinational(func, port=Module.IMPLICIT_POP, *args, **kwargs):
     Singleton.builder.insert_point['expr'] = args[0].body.body
     Singleton.builder.cur_module = args[0]
     Singleton.builder.builder_func = func
+    if port == Module.IMPLICIT_POP:
+        restore = {}
+        for k, v in args[0].__dict__.items():
+            if isinstance(v, Port):
+                restore[k] = v
+                setattr(args[0], k, v.pop())
     res = func(*args, **kwargs)
+    if port == Module.IMPLICIT_POP:
+        for k, v in restore.items():
+            setattr(args[0], k, v)
     Singleton.builder.cleanup_symtab()
     return res
 
