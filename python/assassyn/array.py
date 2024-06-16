@@ -1,19 +1,31 @@
-from .builder import ir_builder, Singleton
-from .dtype import DType, UInt, to_uint
-from .expr import Expr, BinaryOp, ArrayRead, ArrayWrite
+'''The module provides the Array class for representing register arrays in the IR.'''
+
+from .builder import ir_builder
+from .dtype import DType, to_uint
+from .expr import ArrayRead, ArrayWrite
 from .value import Value
 
 @ir_builder(node_type='array')
-def RegArray(scalar_ty: DType, size: int):
+def RegArray(scalar_ty: DType, size: int): #pylint: disable=invalid-name
+    '''
+    The frontend API to declare a register array.
+
+    Args:
+        scalar_ty: The data type of the array elements.
+        size: The size of the array. MUST be a compilation time constant.
+    '''
     return Array(scalar_ty, size)
 
-class Array(object):
+class Array:
+    '''The class represents a register array in the AST IR.'''
 
     def as_operand(self):
+        '''Dump the array as an operand.'''
         return self.name
 
     @property
     def name(self):
+        '''The name of the array. If not set, a default name is generated.'''
         if self._name is not None:
             return self._name
         return f'array_{id(self)}'
@@ -43,4 +55,3 @@ class Array(object):
             index = to_uint(index)
         assert isinstance(index, Value)
         return ArrayWrite(self, index, value)
-

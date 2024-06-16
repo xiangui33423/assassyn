@@ -1,14 +1,19 @@
-from decorator import decorator
+'''The module provides the implementation of a class that is both IR builder and the system.'''
+
 import inspect
 import types
+from decorator import decorator
 
 class Singleton(type):
+    '''The class maintains the global singleton instance of the system builder.'''
     builder = None
     linearize_ptr = None
     repr_ident = None
 
 @decorator
+#pylint: disable=keyword-arg-before-vararg
 def ir_builder(func, node_type=None, *args, **kwargs):
+    '''The decorator annotates the function whose return value will be inserted into the AST.'''
     res = func(*args, **kwargs)
     module_symtab = Singleton.builder.is_direct_call(inspect.currentframe())
     Singleton.builder.insert_point[node_type].append(res)
@@ -19,15 +24,19 @@ def ir_builder(func, node_type=None, *args, **kwargs):
         Singleton.builder.module_symtab = module_symtab
     return res
 
-class SysBuilder(object):
+#pylint: disable=too-many-instance-attributes
+class SysBuilder:
+    '''The class serves as both the system and the IR builder.'''
 
     def cleanup_symtab(self):
+        '''Clean up the symbol table. Assign those named values to its identifier.'''
         value_dict = { id(v): v for v in self.named_expr }
         for k, v in self.module_symtab.items():
             if id(v) in value_dict:
                 value_dict[id(v)].name = k
 
     def is_direct_call(self, frame: types.FrameType):
+        '''If this function call is directly from the module.constructor'''
         upper_frame = frame.f_back.f_back
         if not upper_frame.f_locals.get('self') is self.cur_module:
             return None
@@ -48,11 +57,13 @@ class SysBuilder(object):
         self.named_expr = []
 
     def __enter__(self):
+        '''Designate the scope of this system builder.'''
         assert Singleton.builder is None
         Singleton.builder = self
         return self
 
     def __exit__(self, exc_type, exc_value, traceback):
+        '''Leave the scope of this system builder.'''
         assert Singleton.builder is self
         Singleton.builder = None
 
@@ -60,4 +71,3 @@ class SysBuilder(object):
         body = '\n\n'.join(map(repr, self.modules))
         array = '  ' + '\n  '.join(repr(elem) for elem in self.arrays)
         return f'system {self.name} {{\n{array}\n\n{body}\n}}'
-
