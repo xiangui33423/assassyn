@@ -39,6 +39,7 @@ class Module:
             self.name = self.name + hex(id(self))[-5:-1]
         self.body = None
         self.linearize_ptr = {}
+        self.binds = 0
 
     @property
     def ports(self):
@@ -54,7 +55,9 @@ class Module:
     @ir_builder(node_type='expr')
     def bind(self, **kwargs):
         '''The frontend API for creating a bind operation to this `self` module.'''
-        return Bind(self, **kwargs)
+        bound = Bind(self, **kwargs)
+        self.binds += 1
+        return bound
 
     def as_operand(self):
         '''Dump the module as a right-hand side reference.'''
