@@ -47,6 +47,8 @@ CG_OPCODE = {
     expr.AsyncCall.ASYNC_CALL: 'async_call',
 
     expr.Cast.BITCAST: 'bitcast',
+    expr.Cast.ZEXT: 'zext',
+    expr.Cast.SEXT: 'sext',
 
     expr.Log.LOG: 'log',
 
