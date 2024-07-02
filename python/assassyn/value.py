@@ -65,6 +65,11 @@ class Value:
         return BinaryOp(BinaryOp.IGE, self, other)
 
     @ir_builder(node_type='expr')
+    def __eq__(self, other):
+        from .expr import BinaryOp
+        return BinaryOp(BinaryOp.EQ, self, other)
+
+    @ir_builder(node_type='expr')
     def __invert__(self):
         from .expr import UnaryOp
         return UnaryOp(UnaryOp.FLIP, self)
@@ -92,3 +97,10 @@ class Value:
         '''The frontend API to create a bitwise-concat operation'''
         from .expr import Concat
         return Concat(self, other)
+
+    @ir_builder(node_type='expr')
+    def select(self, true_value, false_value):
+        '''The frontend API to create a select operation'''
+        from .expr import Select
+        print(self)
+        return Select(Select.SELECT, self, true_value, false_value)

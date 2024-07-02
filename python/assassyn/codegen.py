@@ -24,6 +24,7 @@ CG_OPCODE = {
     expr.BinaryOp.IGT: 'igt',
     expr.BinaryOp.ILE: 'ile',
     expr.BinaryOp.IGE: 'ige',
+    expr.BinaryOp.EQ:  'eq',
 
     expr.BinaryOp.BITWISE_OR:  'bitwise_or',
     expr.BinaryOp.BITWISE_AND: 'bitwise_and',
@@ -49,6 +50,8 @@ CG_OPCODE = {
     expr.Cast.BITCAST: 'bitcast',
     expr.Cast.ZEXT: 'zext',
     expr.Cast.SEXT: 'sext',
+
+    expr.Select.SELECT: 'select',
 
     expr.Log.LOG: 'log',
 
@@ -157,6 +160,7 @@ class CodeGen(visitor.Visitor):
             name = elem.synthesis_name().lower()
             ports = ', '.join(generate_port(p) for p in elem.ports)
             self.code.append(f'  let {lval} = sys.create_module("{name}", vec![{ports}]);')
+            self.emit_module_attrs(elem, lval)
         self.code.append('  // Gathered binds')
         for elem in node.modules:
             bind_emitter = EmitBinds(self)
@@ -291,6 +295,11 @@ class CodeGen(visitor.Visitor):
             else:
                 length = len(repr(node)) - 1
                 res = f'  // ^{"~" * length}: Support the instruction above'
+        elif isinstance(node, expr.Select):
+            cond = self.generate_rval(node.cond)
+            true_value = self.generate_rval(node.true_value)
+            false_value = self.generate_rval(node.false_value)
+            res = f'sys.{ib_method}(created_here!(), {cond}, {true_value}, {false_value});'
         else:
             length = len(repr(node)) - 1
             res = f'  // ^{"~" * length}: Support the instruction above'
