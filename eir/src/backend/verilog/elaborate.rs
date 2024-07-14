@@ -2,15 +2,18 @@ use std::{
   collections::{HashMap, HashSet, VecDeque},
   fs::File,
   io::{Error, Write},
+  path::PathBuf,
 };
 
 use crate::{
-  backend::common::Config,
+  backend::common::{create_and_clean_dir, Config},
   builder::system::SysBuilder,
   ir::{node::*, visitor::Visitor, *},
 };
 
 use self::{expr::subcode, module::Attribute};
+
+use super::Simulator;
 
 fn namify(name: &str) -> String {
   name.replace(".", "_")
@@ -36,10 +39,11 @@ struct VerilogDumper<'a, 'b> {
   trigger_drivers: HashMap<String, HashSet<String>>, // module_name -> {driver module}
   array_drivers: HashMap<String, HashSet<String>>,   // array -> {driver module}
   fifo_drivers: HashMap<String, HashSet<String>>,    // fifo -> {driver module}
+  simulator: Simulator,
 }
 
 impl<'a, 'b> VerilogDumper<'a, 'b> {
-  fn new(sys: &'a SysBuilder, config: &'b Config) -> Self {
+  fn new(sys: &'a SysBuilder, config: &'b Config, simulator: Simulator) -> Self {
     Self {
       sys,
       config,
@@ -54,6 +58,7 @@ impl<'a, 'b> VerilogDumper<'a, 'b> {
       trigger_drivers: HashMap::new(),
       array_drivers: HashMap::new(),
       fifo_drivers: HashMap::new(),
+      simulator,
     }
   }
 
@@ -610,6 +615,18 @@ impl<'a, 'b> VerilogDumper<'a, 'b> {
 
     fd.write(res.as_bytes()).unwrap();
 
+    let init = match self.simulator {
+      Simulator::VCS => {
+        "
+initial begin
+  $fsdbDumpfile(\"wave.fsdb\");
+  $fsdbDumpvars();
+  $fsdbDumpMDA();
+end"
+      }
+      Simulator::Verilator => "",
+    };
+
     fd.write(
       format!(
         "
@@ -660,12 +677,6 @@ logic clk;
 logic rst_n;
 
 initial begin
-  $fsdbDumpfile(\"wave.fsdb\");
-  $fsdbDumpvars();
-  $fsdbDumpMDA();
-end
-
-initial begin
   clk = 1'b1;
   rst_n = 1'b0;
   #1;
@@ -676,6 +687,8 @@ end
 
 always #50 clk <= !clk;
 
+{}
+
 top top_i (
   .clk(clk),
   .rst_n(rst_n)
@@ -683,7 +696,7 @@ top top_i (
 
 endmodule
 ",
-        sim_threshold
+        sim_threshold, init
       )
       .as_bytes(),
     )?;
@@ -1603,11 +1616,93 @@ impl<'a, 'b> Visitor<String> for VerilogDumper<'a, 'b> {
   }
 }
 
-pub fn elaborate(sys: &SysBuilder, config: &Config) -> Result<(), Error> {
-  let fname = config.fname(sys, "sv");
+pub fn generate_cpp_testbench(dir: &PathBuf, sys: &SysBuilder, simulator: &Simulator) {
+  if !matches!(simulator, Simulator::Verilator) {
+    return;
+  }
+  let main_fname = dir.join("main.cpp");
+  let mut main_fd = File::create(main_fname).unwrap();
+  main_fd
+    .write(format!("#include \"Vtb.h\"\n").as_bytes())
+    .unwrap();
+  main_fd
+    .write("#include \"verilated.h\"\n".as_bytes())
+    .unwrap();
+  main_fd
+    .write("#include \"verilated_vcd_c.h\"\n".as_bytes())
+    .unwrap();
+  main_fd
+    .write("vluint64_t main_time = 0;\n".as_bytes())
+    .unwrap();
+  main_fd
+    .write("double sc_time_stamp() { return main_time; }\n".as_bytes())
+    .unwrap();
+  main_fd
+    .write("int main(int argc, char **argv) {\n".as_bytes())
+    .unwrap();
+  main_fd
+    .write("  Verilated::commandArgs(argc, argv);\n".as_bytes())
+    .unwrap();
+  main_fd
+    .write(format!("  auto* top = new Vtb;\n").as_bytes())
+    .unwrap();
+  main_fd
+    .write("  Verilated::traceEverOn(true);\n".as_bytes())
+    .unwrap();
+  main_fd
+    .write("  auto* tfp = new VerilatedVcdC;\n".as_bytes())
+    .unwrap();
+  main_fd
+    .write("  top->trace(tfp, 99);\n".as_bytes())
+    .unwrap();
+  main_fd
+    .write("  tfp->open(\"wave.vcd\");\n".as_bytes())
+    .unwrap();
+  main_fd
+    .write("  while (!Verilated::gotFinish()) {\n".as_bytes())
+    .unwrap();
+  main_fd.write("    top->eval();\n".as_bytes()).unwrap();
+  main_fd
+    .write("    tfp->dump(main_time);\n".as_bytes())
+    .unwrap();
+  main_fd.write("    main_time++;\n".as_bytes()).unwrap();
+  main_fd.write("  }\n".as_bytes()).unwrap();
+  main_fd.write("  tfp->close();\n".as_bytes()).unwrap();
+  main_fd.write("  delete top;\n".as_bytes()).unwrap();
+  main_fd.write("  delete tfp;\n".as_bytes()).unwrap();
+  main_fd.write("  return 0;\n".as_bytes()).unwrap();
+  main_fd.write("}\n".as_bytes()).unwrap();
+  let make_fname = dir.join("Makefile");
+  let mut make_fd = File::create(make_fname).unwrap();
+  make_fd
+    .write(".PHONY: verilator main\n".as_bytes())
+    .unwrap();
+  make_fd.write("verilator:\n".as_bytes()).unwrap();
+  make_fd
+    .write(
+      format!(
+        "\t$(VERILATOR_ROOT)/bin/verilator --cc {}.sv --exe main.cpp --top tb --timing --trace\n",
+        sys.get_name()
+      )
+      .as_bytes(),
+    )
+    .unwrap();
+  make_fd.write("main: verilator\n".as_bytes()).unwrap();
+  make_fd
+    .write("\tmake -C obj_dir -f Vtb.mk\n".as_bytes())
+    .unwrap();
+}
+
+pub fn elaborate(sys: &SysBuilder, config: &Config, simulator: Simulator) -> Result<(), Error> {
+  create_and_clean_dir(config.dir_name(sys), config.override_dump);
+  let dir_name = config.dir_name(sys);
+  let fname = dir_name.join(format!("{}.sv", sys.get_name()));
+
   println!("Writing verilog rtl to {}", fname.to_str().unwrap());
 
-  let mut vd = VerilogDumper::new(sys, config);
+  generate_cpp_testbench(&dir_name, sys, &simulator);
+
+  let mut vd = VerilogDumper::new(sys, config, simulator);
 
   let mut fd = File::create(fname)?;
 

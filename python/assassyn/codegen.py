@@ -11,6 +11,7 @@ from .array import Array
 from .module import Module, Port
 from .block import Block
 from .expr import Expr
+from .memory import Memory
 
 CG_OPCODE = {
     expr.BinaryOp.ADD: 'add',
@@ -60,6 +61,11 @@ CG_OPCODE = {
 
 CG_ARRAY_ATTR = {
     Array.FULLY_PARTITIONED: 'FullyPartitioned',
+}
+
+CG_SIMULATOR = {
+        'verilator': 'Verilator',
+        'vcs': 'VCS',
 }
 
 def opcode_to_ib(node: Expr):
@@ -120,15 +126,22 @@ class CodeGen(visitor.Visitor):
             self.code.append(f'{module_mut}.add_attr({path}::Systolic);')
         if m.disable_arbiter_rewrite:
             self.code.append(f'{module_mut}.add_attr({path}::NoArbiter);')
+        if isinstance(m, Memory):
+            width = f'width: {m.width}'
+            depth = f'depth: {m.depth}'
+            lat = f'lat: {m.latency[0]}..={m.latency[1]}'
+            if m.init_file is not None:
+                init_file = f'init_file: Some("{m.init_file}")'
+            else:
+                init_file = 'init_file: None'
+            array = f'array: {m.payload.name}'
+            params = ', '.join([width, depth, lat, init_file, array])
+            params = f'eir::ir::module::memory::MemoryParams{{ {params} }}'
+            self.code.append(f'{module_mut}.add_attr({path}::Memory({params}));')
 
     def emit_config(self):
         '''Emit the configuration fed to the generated simulator'''
-        if self.kwargs:
-            config = self.kwargs
-            idle_threshold = config.get('idle_threshold', 100)
-            sim_threshold = config.get('sim_threshold', 100)
-            return f'idle_threshold: {idle_threshold}, sim_threshold: {sim_threshold},'
-        return ''
+        return f'idle_threshold: {self.idle_threshold}, sim_threshold: {self.sim_threshold},'
 
     def generate_init_value(self, init_value, ty: str):
         '''Generate the initializer vector. NOTE: ty is already generated in an str!'''
@@ -172,8 +185,7 @@ class CodeGen(visitor.Visitor):
             self.visit_module(elem)
         config = self.emit_config()
         self.code.append(f'''
-            let config = eir::backend::common::Config{{
-               base_dir: (env!("CARGO_MANIFEST_DIR").to_string() + "/simulator").into(),
+            let mut config = eir::backend::common::Config{{
                {config}
                ..Default::default()
             }};
@@ -181,7 +193,18 @@ class CodeGen(visitor.Visitor):
         self.code.append('  println!("{}", sys);')
         config = 'eir::xform::Config{ rewrite_wait_until: true }'
         self.code.append(f'  eir::xform::basic(&mut sys, &{config});')
-        self.code.append('  eir::backend::simulator::elaborate(&sys, &config).unwrap();')
+        be_path = 'eir::backend'
+        if self.targets['simulator']:
+            base_dir = '(env!("CARGO_MANIFEST_DIR").to_string() + "/simulator").into()'
+            self.code.append(f'  config.base_dir = {base_dir};')
+            self.code.append(f'  {be_path}::simulator::elaborate(&sys, &config).unwrap();')
+        if 'verilog' in self.targets:
+            base_dir = '(env!("CARGO_MANIFEST_DIR").to_string() + "/verilog").into()'
+            self.code.append(f'  config.base_dir = {base_dir};')
+            verilog_target = self.targets['verilog']
+            simulator = f'{be_path}::verilog::Simulator::{CG_SIMULATOR[verilog_target]}'
+            self.code.append(
+                    f'  {be_path}::verilog::elaborate(&sys, &config, {simulator}).unwrap();')
         self.code.append('}\n')
 
     def visit_module(self, node: Module):
@@ -229,8 +252,7 @@ class CodeGen(visitor.Visitor):
                 let {port_name} = {{
                   let module = {module_name}.as_ref::<eir::ir::Module>(&sys).unwrap();
                   module.get_port_by_name("{node.name}").unwrap().upcast()
-                }};
-            ''')
+                }};''')
             return port_name
         return node.as_operand()
 
@@ -325,17 +347,23 @@ class CodeGen(visitor.Visitor):
         array_decl = f'  let {name} = sys.create_array({ty}, \"{name}\", {size}, {init}, {attrs});'
         self.code.append(array_decl)
 
-    def __init__(self, **kwargs):
+    def __init__(self, simulator, verilog, idle_threshold, sim_threshold):
         self.code = []
         self.header = []
         self.emitted_bind = set()
-        self.kwargs = kwargs
+        self.targets = {}
+        if simulator:
+            self.targets['simulator'] = True
+        if verilog:
+            self.targets['verilog'] = verilog
+        self.idle_threshold = idle_threshold
+        self.sim_threshold = sim_threshold
 
     def get_source(self):
         '''Concatenate the generated source code for the given system'''
         return '\n'.join(self.header) + '\n' + '\n'.join(self.code)
 
-def codegen(sys: SysBuilder, **kwargs):
+def codegen(sys: SysBuilder, simulator, verilog, idle_threshold, sim_threshold):
     '''
     The help function to generate the assassyn IR builder for the given system
 
@@ -343,6 +371,6 @@ def codegen(sys: SysBuilder, **kwargs):
         sys (SysBuilder): The system to generate the builder for
         kwargs: Additional arguments to pass to the code
     '''
-    cg = CodeGen(**kwargs)
+    cg = CodeGen(simulator, verilog, idle_threshold, sim_threshold)
     cg.visit_system(sys)
     return cg.get_source()
