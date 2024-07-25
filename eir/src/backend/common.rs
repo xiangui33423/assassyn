@@ -34,9 +34,10 @@ impl Config {
     self.base_dir.join(fname).into()
   }
 
-  /// The name of the directory to which the elaboration code is dumped.
-  pub fn dir_name(&self, sys: &SysBuilder) -> PathBuf {
-    self.base_dir.join(sys.get_name())
+  /// The name of the directory with a custom suffix.
+  pub fn dirname(&self, sys: &SysBuilder, suf: &str) -> PathBuf {
+    let name_with_suffix = format!("{}_{}", sys.get_name(), suf);
+    self.base_dir.join(name_with_suffix)
   }
 }
 
