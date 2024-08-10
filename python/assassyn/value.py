@@ -70,9 +70,24 @@ class Value:
         return BinaryOp(BinaryOp.EQ, self, other)
 
     @ir_builder(node_type='expr')
+    def __mod__(self, other):
+        from .expr import BinaryOp
+        return BinaryOp(BinaryOp.MOD, self, other)
+
+    @ir_builder(node_type='expr')
     def __invert__(self):
         from .expr import UnaryOp
         return UnaryOp(UnaryOp.FLIP, self)
+
+    @ir_builder(node_type='expr')
+    def __lshift__(self, other):
+        from .expr import BinaryOp
+        return BinaryOp(BinaryOp.SHL, self, other)
+
+    @ir_builder(node_type='expr')
+    def __rshift__(self, other):
+        from .expr import BinaryOp
+        return BinaryOp(BinaryOp.SHR, self, other)
 
     @ir_builder(node_type='expr')
     def bitcast(self, dtype):
@@ -103,6 +118,12 @@ class Value:
         '''The frontend API to create a select operation'''
         from .expr import Select
         return Select(Select.SELECT, self, true_value, false_value)
+
+    @ir_builder(node_type='expr')
+    def select1hot(self, *args):
+        '''The frontend API to create a select1hot operation'''
+        from .expr import Select1Hot
+        return Select1Hot(Select1Hot.SELECT_1HOT, self, args)
 
 
 class Optional:

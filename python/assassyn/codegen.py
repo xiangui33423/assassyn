@@ -30,6 +30,9 @@ CG_OPCODE = {
     expr.BinaryOp.BITWISE_AND: 'bitwise_and',
     expr.BinaryOp.BITWISE_XOR: 'bitwise_xor',
 
+    expr.BinaryOp.SHL: 'shl',
+    expr.BinaryOp.SHR: 'shr',
+
     expr.UnaryOp.FLIP: 'flip',
     expr.UnaryOp.NEG: 'neg',
 
@@ -52,6 +55,7 @@ CG_OPCODE = {
     expr.Cast.SEXT: 'sext',
 
     expr.Select.SELECT: 'select',
+    expr.Select1Hot.SELECT_1HOT: 'select_1hot',
 
     expr.Log.LOG: 'log',
 
@@ -331,6 +335,10 @@ class CodeGen(visitor.Visitor):
             true_value = self.generate_rval(node.true_value)
             false_value = self.generate_rval(node.false_value)
             res = f'sys.{ib_method}(created_here!(), {cond}, {true_value}, {false_value});'
+        elif isinstance(node, expr.Select1Hot):
+            cond = self.generate_rval(node.cond)
+            values = ', '.join(self.generate_rval(i) for i in node.values)
+            res = f'sys.{ib_method}(created_here!(), {cond}, vec![{values}]);'
         else:
             length = len(repr(node)) - 1
             res = f'  // ^{"~" * length}: Support the instruction above'

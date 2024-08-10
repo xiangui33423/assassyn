@@ -30,7 +30,7 @@ class Expr(Value):
 
     def is_valued(self):
         '''If this operation has a return value'''
-        valued = (FIFOField, FIFOPop, ArrayRead, Slice, Cast, Concat, Select)
+        valued = (FIFOField, FIFOPop, ArrayRead, Slice, Cast, Concat, Select, Select1Hot)
         other = isinstance(self, valued)
         return other or self.is_binary() or self.is_unary()
 
@@ -51,6 +51,8 @@ class BinaryOp(Expr):
     ILE         = 211
     IGE         = 212
     EQ          = 213
+    SHL         = 214
+    SHR         = 215
 
     OPERATORS = {
       ADD: '+',
@@ -68,6 +70,9 @@ class BinaryOp(Expr):
       BITWISE_AND: '&',
       BITWISE_OR:  '|',
       BITWISE_XOR: '^',
+
+      SHL: '<<',
+      SHR: '>>',
     }
 
     def __init__(self, opcode, lhs, rhs):
@@ -323,3 +328,20 @@ class Select(Expr):
         true_val = self.true_value.as_operand()
         false_val = self.false_value.as_operand()
         return f'{lval} = {cond} ? {true_val} : {false_val}'
+
+class Select1Hot(Expr):
+    '''The class for the 1hot select operation'''
+
+    # Triary operations
+    SELECT_1HOT = 1001
+
+    def __init__(self, opcode, cond, values):
+        super().__init__(opcode)
+        self.cond = cond
+        self.values = list(values)
+
+    def __repr__(self):
+        lval = self.as_operand()
+        cond = self.cond.as_operand()
+        values = ', '.join(i.as_operand() for i in self.values)
+        return f'{lval} = select_1hot {cond} ({values})'

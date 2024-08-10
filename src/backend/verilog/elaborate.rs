@@ -5,6 +5,8 @@ use std::{
   path::Path,
 };
 
+use regex::Regex;
+
 use crate::{
   backend::common::{create_and_clean_dir, Config},
   builder::system::SysBuilder,
@@ -105,7 +107,7 @@ impl<'a, 'b> VerilogDumper<'a, 'b> {
       res.push_str(
         format!(
           "logic [{}:0] array_{}_driver_{}_widx;\n",
-          (array.get_size() + 1).ilog2() - 1,
+          array.get_size().ilog2(),
           array_name,
           driver
         )
@@ -147,7 +149,7 @@ impl<'a, 'b> VerilogDumper<'a, 'b> {
     res.push_str(
       format!(
         "logic [{}:0] array_{}_widx;\n",
-        (array.get_size() + 1).ilog2() - 1,
+        array.get_size().ilog2(),
         array_name
       )
       .as_str(),
@@ -163,7 +165,7 @@ impl<'a, 'b> VerilogDumper<'a, 'b> {
           .iter()
           .map(|driver| format!(
             "  ({{{}{{array_{}_driver_{}_w}}}} & array_{}_driver_{}_widx)",
-            (array.get_size() + 1).ilog2(),
+            array.get_size().ilog2() + 1,
             array_name,
             driver,
             array_name,
@@ -200,6 +202,19 @@ impl<'a, 'b> VerilogDumper<'a, 'b> {
         )
         .as_str(),
       );
+    } else if let Some(initializer) = array.get_initializer() {
+      res.push_str("if (!rst_n) begin\n");
+      for (idx, _) in initializer.iter().enumerate() {
+        let elem_init = initializer[idx]
+          .as_ref::<IntImm>(self.sys)
+          .unwrap()
+          .get_value();
+        res.push_str(&format!(
+          "    array_{}_q[{}] <= {};\n",
+          array_name, idx, elem_init
+        ));
+      }
+      res.push_str("end\n");
     } else {
       res.push_str(
         format!(
@@ -676,7 +691,7 @@ logic rst_n;
 initial begin
   clk = 1'b1;
   rst_n = 1'b0;
-  #1;
+  #150;
   rst_n = 1'b1;
   #{};
   $finish();
@@ -904,7 +919,7 @@ impl<'a, 'b> Visitor<String> for VerilogDumper<'a, 'b> {
           format!(
             "{}output logic [{}:0] array_{}_widx,\n",
             " ".repeat(self.indent),
-            (array_ref.get_size() + 1).ilog2() - 1,
+            (array_ref.get_size()).ilog2(),
             namify(array_ref.get_name())
           )
           .as_str(),
@@ -1342,18 +1357,55 @@ impl<'a, 'b> Visitor<String> for VerilogDumper<'a, 'b> {
             .unwrap()
             .get_value()
         );
-        for elem in expr.operand_iter().skip(1) {
-          format_str = format_str.replacen(
-            "{}",
-            match elem.get_value().get_dtype(self.sys).unwrap() {
-              DataType::Int(_) | DataType::UInt(_) | DataType::Bits(_) => "%d",
-              DataType::Str => "%s",
-              _ => "?",
-            },
-            1,
-          );
-        }
+
+        let re = Regex::new(r"\{(:.[bxXo]?)?\}").unwrap();
+
+        let dtypes: Vec<_> = expr
+          .operand_iter()
+          .skip(1)
+          .map(|elem| elem.get_value().get_dtype(self.sys).unwrap())
+          .collect();
+
+        let mut dtype_index = 0;
+        format_str = re
+          .replace_all(&format_str, |caps: &regex::Captures| {
+            let result = if let Some(format_spec) = caps.get(1) {
+              match format_spec.as_str() {
+                ":b" => "%b",
+                ":x" => "%x",
+                ":X" => "%X",
+                ":o" => "%o",
+                ":" => {
+                  if let Some(dtype) = dtypes.get(dtype_index) {
+                    match dtype {
+                      DataType::Int(_) | DataType::UInt(_) | DataType::Bits(_) => "%d",
+                      DataType::Str => "%s",
+                      _ => "?",
+                    }
+                  } else {
+                    "?"
+                  }
+                }
+                _ => {
+                  println!("Unrecognized format specifier: {}", format_spec.as_str());
+                  "?"
+                }
+              }
+            } else if let Some(dtype) = dtypes.get(dtype_index) {
+              match dtype {
+                DataType::Int(_) | DataType::UInt(_) | DataType::Bits(_) => "%d",
+                DataType::Str => "%s",
+                _ => "?",
+              }
+            } else {
+              "?"
+            };
+            dtype_index += 1;
+            result
+          })
+          .into_owned();
         format_str = format_str.replace('"', "");
+
         let mut res = String::new();
         res.push_str(
           format!(
@@ -1367,7 +1419,7 @@ impl<'a, 'b> Visitor<String> for VerilogDumper<'a, 'b> {
         );
         res.push_str("$display(\"%t\\t");
         res.push_str(format_str.as_str());
-        res.push_str("\", $time - 100, ");
+        res.push_str("\", $time - 200, ");
         for elem in expr.operand_iter().skip(1) {
           res.push_str(format!("{}, ", dump_ref!(self.sys, elem.get_value())).as_str());
         }
@@ -1614,6 +1666,35 @@ impl<'a, 'b> Visitor<String> for VerilogDumper<'a, 'b> {
       Opcode::Bind => {
         // currently handled in AsyncCall
         Some("".to_string())
+      }
+
+      Opcode::Select1Hot => {
+        let dtype = expr.dtype().get_bits() - 1;
+        let name = namify(expr.upcast().to_string(self.sys).as_str());
+        let select1hot = expr.as_sub::<instructions::Select1Hot>().unwrap();
+        let cond = dump_ref!(self.sys, &select1hot.cond());
+        let mut result = format!("logic [{}:0] {};\n", dtype, name);
+        result += &format!("assign {} = ", name);
+
+        let mut first = true;
+        for (i, elem) in select1hot.value_iter().enumerate() {
+          let str_elem = dump_ref!(self.sys, &elem);
+          if !first {
+            result += " |\n    ";
+          }
+          result += &format!(
+            "({{{}{{{}[{}] == 1'b1}}}} & {})",
+            dtype + 1,
+            cond,
+            i,
+            str_elem
+          );
+          first = false;
+        }
+
+        result += ";";
+
+        Some(result)
       }
 
       _ => panic!("Unknown OP: {:?}", expr.get_opcode()),
