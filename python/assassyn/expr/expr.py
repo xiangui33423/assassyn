@@ -2,6 +2,8 @@
 
 #pylint: disable=cyclic-import,import-outside-toplevel
 
+from functools import reduce
+
 from ..builder import ir_builder
 from ..value import Value
 from ..utils import identifierize
@@ -50,6 +52,7 @@ class BinaryOp(Expr):
     EQ          = 213
     SHL         = 214
     SHR         = 215
+    NEQ         = 216
 
     OPERATORS = {
       ADD: '+',
@@ -63,6 +66,7 @@ class BinaryOp(Expr):
       ILE: '<=',
       IGE: '>=',
       EQ:  '==',
+      NEQ: '!=',
 
       BITWISE_AND: '&',
       BITWISE_OR:  '|',
@@ -350,3 +354,12 @@ class Select1Hot(Expr):
         cond = self.cond.as_operand()
         values = ', '.join(i.as_operand() for i in self.values)
         return f'{lval} = select_1hot {cond} ({values})'
+
+def concat(*args):
+    """
+    Concatenate multiple arguments using the existing concat method.
+    This function translates concat(a, b, c) into a.concat(b).concat(c).
+    """
+    if len(args) < 2:
+        raise ValueError("concat requires at least two arguments")
+    return reduce(lambda x, y: x.concat(y), args)
