@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::builder::SysBuilder;
 
-use super::{node::*, visitor::Visitor, Block, Expr, Module, FIFO};
+use super::{node::*, visitor::Visitor, Array, Block, Expr, Module, FIFO};
 
 /// This node defines a def-use relation between the expression nodes.
 /// This is necessary because a node can be used by multiple in other user.
@@ -37,7 +37,6 @@ impl ExternalInterface {
     //   "Expecting Array or FIFO but got {:?}",
     //   ext_node
     // );
-    assert!(operand.get_kind() == NodeKind::Operand);
     // Next line is equivalent to the following code:
     // if !self.external_interfaces.contains_key(&ext_node) {
     //   self.external_interfaces.insert(ext_node, HashSet::new());
@@ -100,6 +99,10 @@ impl OperandRef<'_> {
       None
     }
   }
+
+  pub fn get_expr(&self) -> ExprRef<'_> {
+    self.user.as_ref::<Expr>(self.sys).unwrap()
+  }
 }
 
 impl OperandMut<'_> {
@@ -116,8 +119,10 @@ impl OperandMut<'_> {
 }
 
 macro_rules! impl_user_methods {
-  ($class:ident) => {
+  ($($class:ident),* $(,)?) => {
     paste::paste! {
+
+      $(
       impl [< $class Mut >] <'_> {
         pub(crate) fn add_user(&mut self, user: BaseNode) {
           assert!(!self.get().users().contains(&user));
@@ -129,18 +134,52 @@ macro_rules! impl_user_methods {
           self.get_mut().user_set.remove(user);
         }
       }
+
       impl [<$class Ref>] <'_> {
         pub fn users(&self) -> &HashSet<BaseNode> {
           &self.get().user_set
         }
       }
+      )*
+
+      impl SysBuilder {
+
+        fn remove_user(&mut self, operand: &BaseNode) {
+          if operand.is_unknown() {
+            return;
+          }
+          let operand_ref = operand.as_ref::<Operand>(self).unwrap();
+          let def_value = *operand_ref.get_value();
+          match def_value.get_kind() {
+            $( NodeKind::$class => {
+              let mut mutator = self.get_mut::<$class>(&def_value).unwrap();
+              mutator.remove_user(operand);
+            } )*
+            _ => {}
+          }
+        }
+
+        fn add_user(&mut self, operand: BaseNode) {
+          if operand.is_unknown() {
+            return;
+          }
+          let operand_ref = operand.as_ref::<Operand>(self).unwrap();
+          let value = *operand_ref.get_value();
+          match value.get_kind() {
+            $( NodeKind::$class => {
+              let mut mutator = self.get_mut::<$class>(&value).unwrap();
+              mutator.add_user(operand);
+            } )*
+            _ => {}
+          }
+        }
+      }
+
     }
   };
 }
 
-impl_user_methods!(Module);
-impl_user_methods!(Expr);
-impl_user_methods!(FIFO);
+impl_user_methods!(Module, Expr, FIFO, Array);
 
 struct GatherAllUses {
   src: BaseNode,
@@ -246,11 +285,7 @@ impl SysBuilder {
     let module = match operand_ref.get_user().get_kind() {
       NodeKind::Expr => {
         let expr = operand_ref.get_user().as_ref::<Expr>(self).unwrap();
-        expr
-          .get_parent()
-          .as_ref::<Block>(self)
-          .unwrap()
-          .get_module()
+        expr.get_block().get_module()
       }
       _ => unreachable!(),
     };
@@ -262,52 +297,6 @@ impl SysBuilder {
       .remove_external_interface(value, *operand);
 
     self.remove_user(operand);
-  }
-
-  pub(crate) fn remove_user(&mut self, operand: &BaseNode) {
-    if operand.is_unknown() {
-      return;
-    }
-    let operand_ref = operand.as_ref::<Operand>(self).unwrap();
-    let def_value = *operand_ref.get_value();
-    match def_value.get_kind() {
-      NodeKind::Module => {
-        let mut module_mut = self.get_mut::<Module>(&def_value).unwrap();
-        module_mut.remove_user(operand);
-      }
-      NodeKind::FIFO => {
-        let mut fifo_mut = self.get_mut::<FIFO>(&def_value).unwrap();
-        fifo_mut.remove_user(operand);
-      }
-      NodeKind::Expr => {
-        let mut expr_mut = self.get_mut::<Expr>(&def_value).unwrap();
-        expr_mut.remove_user(operand);
-      }
-      _ => {}
-    }
-  }
-
-  pub(crate) fn add_user(&mut self, operand: BaseNode) {
-    if operand.is_unknown() {
-      return;
-    }
-    let operand_ref = operand.as_ref::<Operand>(self).unwrap();
-    let value = *operand_ref.get_value();
-    match value.get_kind() {
-      NodeKind::Module => {
-        let mut module_mut = self.get_mut::<Module>(&value).unwrap();
-        module_mut.add_user(operand);
-      }
-      NodeKind::FIFO => {
-        let mut fifo_mut = self.get_mut::<FIFO>(&value).unwrap();
-        fifo_mut.add_user(operand);
-      }
-      NodeKind::Expr => {
-        let mut expr_mut = self.get_mut::<Expr>(&value).unwrap();
-        expr_mut.add_user(operand);
-      }
-      _ => {}
-    }
   }
 
   // TODO(@were): I strongly believe we can have a BFS based gatherer to have better performance.
@@ -340,13 +329,7 @@ impl SysBuilder {
         let expr = value.as_ref::<Expr>(self).unwrap();
         // If this expression is NOT in the same module as the user, then it is an external
         // interface.
-        expr
-          .get_parent()
-          .as_ref::<Block>(self)
-          .unwrap()
-          .get_module()
-          .get_key()
-          != module.get_key()
+        expr.get_block().get_module().get_key() != module.get_key()
       }
       _ => false,
     } {
