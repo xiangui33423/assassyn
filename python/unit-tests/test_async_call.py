@@ -50,11 +50,15 @@ def test_async_call():
         adder.build()
 
         driver = Driver()
-        driver.build(adder)
+        call = driver.build(adder)
 
     print(sys)
 
-    config = assassyn.backend.config(verilog=utils.has_verilator(), sim_threshold=200, idle_threshold=200, random=True)
+    config = assassyn.backend.config(
+            verilog=utils.has_verilator(),
+            sim_threshold=200,
+            idle_threshold=200,
+            random=True)
 
     simulator_path, verilator_path = elaborate(sys, **config)
 
