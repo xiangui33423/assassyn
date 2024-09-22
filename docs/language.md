@@ -184,6 +184,7 @@ read/write to arrays, and asynchronous module invocations.
 with Conditional(cond):
     # do something
 ````
+    * NOTE: With Condition(cond) is a compilation-time IR builder API.  If you use `if` statement, it is a runtime API. Refer to the usage in `test_async_call.py` and `test_eager_bind.py`  to differentiate these two.
     * Besides, we also support cycle-speicific operation to write testbenches.
 ```` Python
 with Cycle(1):
