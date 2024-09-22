@@ -13,7 +13,7 @@ class Layer(Module):
 
     :param height: The total height of the heap. Must be a positive integer.
     :param level: The current level number. Must be between 0 and height-1.
-                    If level is 0, it represents the top layer, and if level equals height, it represents the bottom layer.
+                    If level is 0, it represents the top layer, and if level equals height-1, it represents the bottom layer.
     :raises ValueError: If height is no more than 0, or if level is out of the valid range.
     """
     @module.constructor
@@ -24,7 +24,7 @@ class Layer(Module):
         if level < 0 or level >= height:
             raise ValueError(f"Level must be between 0 and {height-1}, got {level}")
             
-        self.height = height-level+1    # Not the heap height, but the layer height
+        self.height = height-level+1    # Not the heap height, but the layer height. TODO: Vacancy can be reduced by 1 in the future.
         self.level = level
         self.level_I = Int(32)(level)
         self.name = f"level_{level}"
@@ -35,133 +35,122 @@ class Layer(Module):
         self.value = Port(Int(32))
 
     @module.combinational
-    def build(self, next_layer: 'Layer' = None, next_elements: RegArray = None):        
+    def build(self, next_layer: 'Layer' = None, next_elements: RegArray = None):    
+        ZERO = Int(1)(0)
+        ONE = Int(1)(1)
+        
         index_bit = max(self.level, 1)        
         index0 = self.index[0:index_bit-1].bitcast(Int(index_bit))
+        value0 = self.elements[index0][self.height+1:self.height+32].bitcast(Int(32))
+        valid0 = self.elements[index0][self.height:self.height]
+        vacancy0 = self.elements[index0][0:self.height-1].bitcast(Int(self.height))
+        
+        if next_elements:
+            # Two child nodes derived from the same parent node.
+            index1 = (index0 * Int(32)(2))[0:31].bitcast(Int(32))
+            index2 = index1 + Int(32)(1)
+            # Extract values from structs
+            value1 = next_elements[index1][self.height:self.height+31]
+            value2 = next_elements[index2][self.height:self.height+31]
+            # Extract valids from structs
+            valid1 = next_elements[index1][self.height-1:self.height-1]
+            valid2 = next_elements[index2][self.height-1:self.height-1]
+            # Extract vacancys from structs
+            vacancy1 = next_elements[index1][0:self.height-2]
+            vacancy2 = next_elements[index2][0:self.height-2]
 
         # PUSH
         with Condition(~self.action):
-            v = self.elements[index0]
             # The current element is valid.
-            with Condition(~v[self.height:self.height]):
-                vv = self.value.concat(Int(1)(1)).concat(v[0:self.height-1])
-                self.elements[index0] = vv
+            with Condition(~valid0):
+                element_update = self.value.concat(ONE).concat(vacancy0)
+                self.elements[index0] = element_update
                 log("Push {}  \tin\tLevel_{}[{}]\tFrom  {} + {} + {}\tto  {} + {} + {}",
-                    self.value, self.level_I, index0,
-                    self.elements[index0][self.height+1:self.height+32],
-                    self.elements[index0][self.height:self.height],
-                    self.elements[index0][0:self.height-1], 
-                    vv[self.height+1:self.height+32],
-                    vv[self.height:self.height],
-                    vv[0:self.height-1])
+                    self.value, self.level_I, index0, value0, valid0, vacancy0, self.value, ONE, vacancy0)
                 
             # The current element is occupied.
-            with Condition(v[self.height:self.height]):                                            
+            with Condition(valid0):                                            
                 # There is no vacancy on the subtree.
-                with Condition(v[0:self.height-1] == UInt(self.height)(0)):
+                with Condition(vacancy0 == Int(self.height)(0)):
                     log("Push {}  \tPush failed, There is no vacancy!", self.value)
                     
                 # There is vacancy on the subtree.
-                with Condition(v[0:self.height-1] > UInt(self.height)(0)):
-                    vacancy = v[0:self.height-1].bitcast(Int(self.height))-Int(self.height)(1)    
-                    # value write to current level                
-                    value_current = (self.value > v[self.height+1:self.height+32].bitcast(Int(32))).select(v[self.height+1:self.height+32].bitcast(Int(32)), self.value)
+                with Condition(vacancy0 > Int(self.height)(0)):
+                    vacancy = vacancy0 - Int(self.height)(1)    
+                    # value write to current level
+                    value_current = (self.value > value0).select(value0, self.value)
                     # value write to next level
-                    value_next = (self.value > v[self.height+1:self.height+32].bitcast(Int(32))).select(self.value, v[self.height+1:self.height+32].bitcast(Int(32)))
-                    vv = value_current.concat(Int(1)(1)).concat(vacancy)
-                    self.elements[index0] = vv
+                    value_next = (self.value > value0).select(self.value, value0)
+                    element_update = value_current.concat(ONE).concat(vacancy)
+                    self.elements[index0] = element_update
                     log("Push {}  \tin\tLevel_{}[{}]\tFrom  {} + {} + {}\tto  {} + {} + {}",
-                        self.value, self.level_I, index0,
-                        self.elements[index0][self.height+1:self.height+32],
-                        self.elements[index0][self.height:self.height],
-                        self.elements[index0][0:self.height-1],
-                        vv[self.height+1:self.height+32],
-                        vv[self.height:self.height],
-                        vv[0:self.height-1])
+                        self.value, self.level_I, index0, value0, valid0, vacancy0, value_current, ONE, vacancy)
                     
                     # Call next layer
                     if next_elements:
-                        # Two child nodes derived from the same parent node.
-                        index1 = (index0 * Int(32)(2))[0:31].bitcast(Int(32))
-                        index2 = index1 + Int(32)(1)
-                        v1 = next_elements[index1]
-                        v2 = next_elements[index2]
-                        
                         # At least one child is valid
-                        with Condition(~v1[self.height-1:self.height-1] | ~v2[self.height-1:self.height-1]):
-                            valid_ab = (~v2[self.height-1:self.height-1]).concat(~v1[self.height-1:self.height-1]).bitcast(Int(2))
+                        with Condition(~valid1 | ~valid2):
+                            valid_ab = (~valid2).concat(~valid1).bitcast(Int(2))
                             pred = ((~valid_ab) + Int(2)(1)) & valid_ab
                             index_next = pred.select1hot(index1, index2)
-                            call = next_layer.async_called(action=Int(1)(0), index=index_next, value=value_next)
+                            call = next_layer.async_called(action=ZERO, index=index_next, value=value_next)
                             call.bind.set_fifo_depth(action=1, index=1, value=1)
 
 
                         # Two child nodes are both occupied.
-                        with Condition(v1[self.height-1:self.height-1] & v2[self.height-1:self.height-1]):
-                            index_next = (v1[0:self.height-2] < v2[0:self.height-2]).select(index2, index1)
-                            call = next_layer.async_called(action=Int(1)(0), index=index_next, value=value_next)
+                        with Condition(valid1 & valid2):
+                            index_next = (vacancy1 < vacancy2).select(index2, index1)
+                            call = next_layer.async_called(action=ZERO, index=index_next, value=value_next)
                             call.bind.set_fifo_depth(action=1, index=1, value=1)
 
         # POP
         with Condition(self.action):
-            v = self.elements[index0]         
             # The current element is valid.
-            with Condition(~v[self.height:self.height]):
+            with Condition(~valid0):
                 log("Pop\t\tPop failed! The heap is empty.")
             # The current element is occupied.
-            with Condition(v[self.height:self.height]):
+            with Condition(valid0):
                 with Condition(self.level_I == Int(32)(0)):
-                    log("Pop: {}", self.elements[index0][self.height+1:self.height+32])
+                    log("Pop: {}", value0)
                 with Condition(self.level_I != Int(32)(0)):
                     log("Pop  {}  \tfrom\tLevel_{}[{}]\tFrom  {} + {} + {}",
-                        self.elements[index0][self.height+1:self.height+32],
-                        self.level_I, index0,
-                        self.elements[index0][self.height+1:self.height+32],
-                        self.elements[index0][self.height:self.height],
-                        self.elements[index0][0:self.height-1])
+                        value0, self.level_I, index0, value0, valid0, vacancy0)
                     
                 # Call next layer                                        
                 if next_elements is None:
-                    vacancy = v[0:self.height-1].bitcast(Int(self.height))+Int(self.height)(1)
-                    vv = Int(32)(0).concat(Int(1)(0)).concat(v[0:self.height-1])
-                    self.elements[index0] = vv
+                    element_update = Int(32)(0).concat(ZERO).concat(vacancy0)
+                    self.elements[index0] = element_update
                     
-                if next_elements:
-                    # Two child nodes derived from the same parent node.
-                    index1 = (index0 * Int(32)(2))[0:31].bitcast(Int(32))
-                    index2 = index1 + Int(32)(1)
-                    v1 = next_elements[index1]
-                    v2 = next_elements[index2]
-                    
+                if next_elements:                    
                     # Two child nodes are both occupied.
-                    with Condition(v1[self.height-1:self.height-1] & v2[self.height-1:self.height-1]):
+                    with Condition(valid1 & valid2):
                         # value write to current level
-                        value_update = (v1[self.height:self.height+31] < v2[self.height:self.height+31]).select(v1[self.height:self.height+31], v2[self.height:self.height+31])
-                        index_next = (v1[self.height:self.height+31] < v2[self.height:self.height+31]).select(index1, index2)                        
-                        vacancy = v[0:self.height-1].bitcast(Int(self.height))+Int(self.height)(1)
-                        vv = value_update.concat(Int(1)(1)).concat(vacancy)
-                        self.elements[index0] = vv
+                        value_update = (value1 < value2).select(value1, value2)
+                        index_next = (value1 < value2).select(index1, index2)                        
+                        vacancy = vacancy0 + Int(self.height)(1)
+                        element_update = value_update.concat(ONE).concat(vacancy)
+                        self.elements[index0] = element_update
 
-                        call = next_layer.async_called(action=Int(1)(1), index=index_next, value=Int(32)(0))
+                        call = next_layer.async_called(action=ONE, index=index_next, value=Int(32)(0))
                         call.bind.set_fifo_depth(action=1, index=1, value=1)
                         
                     # One child is valid, another is occupied.
-                    with Condition(v1[self.height-1:self.height-1] ^ v2[self.height-1:self.height-1]):
-                        occupied_ab = v2[self.height-1:self.height-1].concat(v1[self.height-1:self.height-1]).bitcast(Int(2))
+                    with Condition(valid1 ^ valid2):
+                        occupied_ab = valid2.concat(valid1).bitcast(Int(2))
                         pred = ((~occupied_ab) + Int(2)(1)) & occupied_ab
                         index_next = pred.select1hot(index1, index2)
-                        value_update = pred.select1hot(v1[self.height:self.height+31], v2[self.height:self.height+31])
-                        vacancy = v[0:self.height-1].bitcast(Int(self.height))+Int(self.height)(1)
-                        vv = value_update.concat(Int(1)(1)).concat(vacancy)
-                        self.elements[index0] = vv
+                        value_update = pred.select1hot(value1, value2)
+                        vacancy = vacancy0 + Int(self.height)(1)
+                        element_update = value_update.concat(ONE).concat(vacancy)
+                        self.elements[index0] = element_update
 
-                        call = next_layer.async_called(action=Int(1)(1), index=index_next, value=Int(32)(0))
+                        call = next_layer.async_called(action=ONE, index=index_next, value=Int(32)(0))
                         call.bind.set_fifo_depth(action=1, index=1, value=1)
 
                     # Two child nodes are both valid.
-                    with Condition(~v1[self.height-1:self.height-1] & ~v2[self.height-1:self.height-1]):
-                        vv = Int(32)(0).concat(Int(1)(0)).concat(v[0:self.height-1])
-                        self.elements[index0] = vv
+                    with Condition(~valid1 & ~valid2):
+                        element_update = Int(32)(0).concat(ZERO).concat(vacancy0)
+                        self.elements[index0] = element_update
 
 class HeapPush(Module):
     
@@ -248,7 +237,7 @@ def check(raw,heap_height):
 def priority_queue(heap_height=3):    
     # Build a layer with the given heap height and layer level.
     def build_layer(heap_height: int, level: int):
-        element_type = Bits(32 + 1 + (heap_height-level+1))  # value + occupied + vacancy
+        element_type = Bits(32 + 1 + (heap_height-level+1))  # value + occupied + vacancy. TODO: Vacancy can be reduced by 1 in the future.
         size = 2 ** level
         vacancy = 2 ** (heap_height - level) - 2
         initializer = [vacancy] * size
