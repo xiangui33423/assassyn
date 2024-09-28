@@ -111,13 +111,20 @@ class Record(DType):
                     assert dtype.bits == bitwidth, f'Expecting {bitwidth} bits for {dtype}'
                 else:
                     assert False, f'{dtype} cannot be constructed in Record'
-                self.fields[name] = (dtype, slice(bits, bits + bitwidth - 1))
+                self.fields[name] = (dtype, slice(start, end))
                 bits += bitwidth
+            mask = [None] * bits
+            for (start, end), (name, _) in fields.items():
+                for i in range(start, end + 1):
+                    assert mask[i] is None, f'Field {mask[i]} and {name} overlap'
+                    mask[i] = name
+            self.readonly = any(i is None for i in mask)
         elif kwargs:
             for name, dtype in reversed(kwargs.items()):
                 assert isinstance(dtype, DType)
                 self.fields[name] = (dtype, slice(bits, bits + dtype.bits - 1))
                 bits += dtype.bits
+            self.readonly = False
         else:
             assert False, 'No fields provided for Record'
 
@@ -125,7 +132,7 @@ class Record(DType):
 
     def bundle(self, **kwargs):
         '''The syntax sugar for creating a record'''
-        #pylint: disable=import-outside-toplevel
+        assert not self.readonly, 'Cannot bundle a readonly record'
         return RecordValue(self, **kwargs)
 
     def view(self, value):
