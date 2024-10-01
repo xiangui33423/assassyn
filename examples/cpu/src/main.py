@@ -6,6 +6,165 @@ from assassyn import utils
 
 from opcodes import *
 
+rv_r_type = Record({
+    (0, 6): ('opcode', Bits),
+    (7, 11): ('rd', Bits),
+    (12, 14): ('funct3', Bits),
+    (15, 19): ('rs1', Bits),
+    (20, 24): ('rs2', Bits),
+    (25, 31): ('funct7', Bits),
+})
+
+rv_i_type = Record({
+    (0, 6): ('opcode', Bits),
+    (7, 11): ('rd', Bits),
+    (12, 14): ('funct3', Bits),
+    (15, 19): ('rs1', Bits),
+    (20, 31): ('imm', Bits),
+})
+
+rv_s_type = Record({
+    (0, 6): ('opcode', Bits),
+    (7, 11): ('imm4_0', Bits),
+    (12, 14): ('funct3', Bits),
+    (15, 19): ('rs1', Bits),
+    (20, 24): ('rs2', Bits),
+    (25, 31): ('imm11_5', Bits),
+})
+
+rv_u_type = Record({
+    (0, 6): ('opcode', Bits),
+    (7, 11): ('rd', Bits),
+    (12, 31): ('imm', Bits),
+})
+
+rv_b_type = Record({
+    (0, 6): ('opcode', Bits),
+    (7, 7): ('imm11', Bits),
+    (8, 11): ('imm4_1', Bits),
+    (12, 14): ('funct3', Bits),
+    (15, 19): ('rs1', Bits),
+    (20, 24): ('rs2', Bits),
+    (25, 30): ('imm10_5', Bits),
+    (31, 31): ('imm12', Bits),
+})
+
+
+supported_opcodes = [
+  # mn,     opcode,    type
+  ('lui'   , 0b0110111, rv_u_type),
+  ('addi'  , 0b0010011, rv_i_type),
+  ('add'   , 0b0110011, rv_r_type),
+  ('lw'    , 0b0000011, rv_i_type),
+  ('bne'   , 0b1100011, rv_b_type),
+  ('ret'   , 0b1101111, rv_u_type),
+  ('ebreak', 0b1110011, rv_i_type),
+]
+
+deocder_signals = Record(
+  memory_read=Bits(1),
+  invoke_adder=Bits(1),
+  is_branch=Bits(1),
+  rs1_reg=Bits(5),
+  rs1_valid=Bits(1),
+  rs2_reg=Bits(5),
+  rs2_valid=Bits(1),
+  rd_reg=Bits(5),
+  rd_valid=Bits(1),
+  imm_valid=Bits(1),
+  imm_value=Bits(32),
+)
+
+def decode_logic(inst):
+    r_inst = rv_r_type.view(inst)
+    i_inst = rv_i_type.view(inst)
+    s_inst = rv_s_type.view(inst)
+    b_inst = rv_b_type.view(inst)
+    u_inst = rv_u_type.view(inst)
+
+    i_imm = Bits(20)(0).concat(i_inst.imm)
+    u_imm = Bits(12)(0).concat(u_inst.imm)
+    s_imm_raw = concat(s_inst.imm11_5, s_inst.imm4_0)
+    s_imm = Bits(20)(0).concat(s_imm_raw)
+    b_imm_raw = concat(b_inst.imm12, b_inst.imm11, b_inst.imm10_5, b_inst.imm4_1)
+    b_imm = concat(Bits(19)(0), b_imm_raw, Bits(1)(0))
+
+    eqs = {}
+
+    inst_types = {
+       rv_r_type: Bits(1)(0),
+       rv_i_type: Bits(1)(0),
+       rv_s_type: Bits(1)(0),
+       rv_b_type: Bits(1)(0),
+       rv_u_type: Bits(1)(0)
+    }
+
+    # Check if the given instruction's opcode equals one of the supported opcodes
+    for mn, opcode, cur_type in supported_opcodes:
+        wrapped_opcode = Bits(7)(opcode)
+        eq = r_inst.opcode == wrapped_opcode
+        eqs[mn] = eq
+        inst_types[cur_type] = inst_types[cur_type] | eq
+
+        pad = 6 - len(mn)
+        pad = ' ' * pad
+
+        if cur_type is rv_r_type:
+            with Condition(eq):
+                log(f"r.{mn}.{{:07b}}{pad} | rd: x{{}} | rs1: x{{}} | rs2: x{{}} |", wrapped_opcode, r_inst.rd, r_inst.rs1, r_inst.rs2)
+
+        if cur_type is rv_i_type:
+            with Condition(eq):
+                log(f"i.{mn}.{{:07b}}{pad} | rd: x{{}} | rs1: x{{}} |            | imm: 0x{{:x}}", wrapped_opcode, i_inst.rd, i_inst.rs1, i_imm)
+
+        if cur_type is rv_s_type:
+            with Condition(eq):
+                log(f"s.{mn}.{{:07b}}{pad} |           | rs1: x{{}} | rs2: x{{}} | imm: 0x{{:x}}", wrapped_opcode, s_inst.rs1, s_inst.rs2, s_imm)
+
+        if cur_type is rv_u_type:
+            with Condition(eq):
+                log(f"u.{mn}.{{:07b}}{pad} | rd: x{{}} |            |            | imm: 0x{{:x}}", wrapped_opcode, u_inst.rd, u_imm)
+
+        if cur_type is rv_b_type:
+            with Condition(eq):
+                log(f"b.{mn}.{{:07b}}{pad} |           | rs1: x{{}} | rs2: x{{}} | imm: 0x{{:x}}", wrapped_opcode, b_inst.rs1, b_inst.rs2, b_imm)
+
+
+    # Extract all the instruction types
+    is_r_type, is_i_type, is_s_type, is_b_type, is_u_type = inst_types[rv_r_type], inst_types[rv_i_type], inst_types[rv_s_type], inst_types[rv_b_type], inst_types[rv_u_type]
+    # Extract all the signals
+    memory_read = eqs['lw']
+    invoke_adder = eqs['addi'] | eqs['add'] | eqs['lw'] | eqs['bne']
+    is_branch = eqs['bne'] | eqs['ret'] | eqs['ebreak']
+    # Extract all the operands according to the instruction types
+    # rs1
+    rs1_valid = is_r_type | is_i_type | is_s_type | is_b_type
+    rs1_reg = rs1_valid.select(r_inst.rs1, Bits(5)(0))
+    # rs2
+    rs2_valid = is_r_type | is_s_type | is_b_type
+    rs2_reg = rs2_valid.select(r_inst.rs2, Bits(5)(0))
+    # rd
+    rd_valid = is_r_type | is_i_type | is_u_type
+    rd_reg = rd_valid.select(r_inst.rd, Bits(5)(0))
+    # imm
+    imm_valid = is_i_type | is_u_type | is_s_type | is_b_type
+    imm_value = is_i_type.select(i_imm, is_u_type.select(u_imm, is_s_type.select(s_imm, b_imm)))
+    imm_value = eqs['lui'].select(u_inst.imm.concat(Bits(12)(0)), imm_value)
+
+    return deocder_signals.bundle(
+        memory_read=memory_read,
+        invoke_adder=invoke_adder,
+        is_branch=is_branch,
+        rs1_reg=rs1_reg,
+        rs1_valid=rs1_valid,
+        rs2_reg=rs2_reg,
+        rs2_valid=rs2_valid,
+        rd_reg=rd_reg,
+        rd_valid=rd_valid,
+        imm_valid=imm_valid,
+        imm_value=imm_value)
+
+
 class Execution(Module):
     
     @module.constructor
@@ -41,6 +200,10 @@ class Execution(Module):
         is_bne    = op_check.bne
         is_ebreak = op_check.ebreak
 
+        with Condition(is_ebreak):
+            log('ebreak({:07b}) | halt', self.opcode)
+            finish()
+
         # Instruction attributes
         uses_imm = is_addi | is_bne
         is_branch = is_bne
@@ -63,7 +226,7 @@ class Execution(Module):
             Bits(32)(0), self.imm_value, result
         )
         with Condition(invoke_adder):
-            log("adder({:b})   | a: {:x} | b:{:x} | res: {:x}", self.opcode, a, rhs, result)
+            log("add         | a: {:x} | b:{:x} | res: {:x}", a, rhs, result)
 
         produced_by_exec = is_lui | is_addi | is_add
 
@@ -75,8 +238,10 @@ class Execution(Module):
             log("clear-br({:b})| on_branch = 0", self.opcode)
         
         with Condition(is_bne):
-            dest_pc = (pc[0].bitcast(Int(32)) - Int(32)(8) \
-                      + self.imm_value.bitcast(Int(32))).bitcast(Bits(32))
+            delta = self.imm_value[0:12]
+            delta = delta[12:12].select(Bits(19)(1), Bits(19)(0)).concat(delta).bitcast(Int(32))
+            log('delta: {:x}', delta)
+            dest_pc = (pc[0].bitcast(Int(32)) - Int(32)(8) + delta).bitcast(Bits(32))
             new_pc = (pc[0].bitcast(Int(32)) - Int(32)(4)).bitcast(Bits(32))
             br_dest = (a != b).select(dest_pc, new_pc)
             log("bne({:b})     | {} != {} | to {} | else {}", self.opcode, a, b, dest_pc, new_pc)
@@ -100,10 +265,6 @@ class Execution(Module):
         with Condition(self.rd_reg != Bits(5)(0)):
             return_rd = self.rd_reg
             log("with-rd({:07b})| own x{}", self.opcode, self.rd_reg)
-
-        with Condition(is_ebreak):
-            log('ebreak({:07b}) | halt', self.opcode)
-            finish()
 
         return wb, return_rd
 
@@ -186,85 +347,21 @@ class Decoder(Memory):
     @module.combinational
     def build(self, pc: Array, on_branch: Array, exec: Module):
         super().build()
-        inst = self.rdata
         with Condition(~on_branch[0]):
-            # Slice the fields
-            opcode = inst[0:6]
-            rd = inst[7:11]
-            rs1 = inst[15:19]
-            rs2 = inst[20:24]
-            i_imm = inst[20:31]
-            
-            u_imm = inst[12:31].concat(Bits(12)(0)) 
+            inst = self.rdata
+            signals = decode_logic(inst)
 
-            sign = inst[31:31]
-            b_imm = concat(inst[31:31], inst[7:7], inst[25:30], inst[8:11], Bits(1)(0))
-            b_imm = (sign.select(Bits(19)(0x7ffff), Bits(19)(0))).concat(b_imm)
-
-            op_check = OpcodeChecker(opcode)
-            op_check.check('lui', 'addi', 'add', 'lw', 'bne', 'ret', 'ebreak')
-
-            is_lui    = op_check.lui
-            is_addi   = op_check.addi
-            is_add    = op_check.add
-            is_lw     = op_check.lw
-            is_bne    = op_check.bne
-            is_ret    = op_check.ret
-            is_ebreak = op_check.ebreak
-
-            supported = is_lui | is_addi | is_add | is_lw | is_bne | is_ret | is_ebreak
-            write_rd = is_lui | is_addi | is_add | is_lw
-            read_rs1 = is_lui | is_addi | is_add | is_bne | is_lw
-            read_rs2 = is_add | is_bne
-            read_i_imm = is_addi | is_lw
-            read_u_imm = is_lui
-            read_b_imm = is_bne
-            
-            with Condition(is_bne):
-                log("set on-branch!")
+            with Condition(signals.is_branch):
                 on_branch[0] = Bits(1)(1)
 
-            reg_a = read_rs1.select(rs1, Bits(5)(0))
-            reg_b = read_rs2.select(rs2, Bits(5)(0))
-
-            no_imm = ~(read_i_imm | read_u_imm | read_b_imm)
-            imm_cond = concat(read_i_imm, read_u_imm, read_b_imm, no_imm)
-            imm_value = imm_cond.select1hot(
-                Bits(32)(0), 
-                b_imm, 
-                u_imm, 
-                i_imm.zext(Bits(32))
-            )
-            
-            rd_reg = write_rd.select(rd, Bits(5)(0))
-
             exec.async_called(
-                opcode = opcode, 
-                imm_value = imm_value, 
-                a_reg = reg_a, 
-                b_reg = reg_b, 
-                rd_reg = rd_reg
+                opcode = inst[0:6],
+                imm_value = signals.imm_value,
+                a_reg = signals.rs1_reg,
+                b_reg = signals.rs2_reg,
+                rd_reg = signals.rd_reg
             )
 
-            with Condition(is_lui):
-                log("lui({:07b})    | rd: x{} |          | imm: 0x{:x}", opcode, rd, imm_value)
-            with Condition(is_lw):
-                log("lw({:07b})     | rd: x{} | rs1: x{} | imm: {}", opcode, rd, rs1, i_imm)
-            with Condition(is_addi):
-                log("addi({:07b})   | rd: x{} | rs1: x{} | imm: {}", opcode, rd, rs1, i_imm)
-            with Condition(is_add):
-                log("add({:07b})    | rd: x{} | rs1: x{} | rs2: x{}", opcode, rd, rs1, rs2)
-            with Condition(is_bne):
-                log("bne({:07b})    |         | rs1: x{} | rs2: x{}, imm: {}", opcode, rs1, rs2, b_imm.bitcast(Int(32)))
-            with Condition(is_ret):
-                log("ret({:07b})    | ret", opcode)
-            with Condition(is_ebreak):
-                log("ebreak({:07b}) | ", opcode)
-                finish()
-            
-            with Condition(~supported):
-                log("unsupported opcode: {:b}, raw_inst: {:x}", opcode, inst)
-        
         with Condition(on_branch[0]):
             log("on a branch, stall decoding, pc freeze at 0x{:x}", pc[0])
                 
@@ -288,7 +385,7 @@ class MemoryAccess(Memory):
     ):
         super().build()
         data = self.rdata
-        log("mem.wdata       | 0x{:x}", data)
+        log("mem.rdata       | 0x{:x}", data)
         writeback.async_called(mdata = data)
         with Condition(mem_bypass_reg[0] != Bits(5)(0)):
             log("mem.bypass      | x{} = {}", mem_bypass_reg[0], data)
@@ -308,13 +405,13 @@ class Fetcher(Module):
     @module.combinational
     def build(self, decoder: Memory, pc: Array, on_branch: Array):
         with Condition(~on_branch[0]):
-            log("fetching        | *inst[0x{:x}]", pc[0])
+            log("fetching         | *inst[0x{:x}]", pc[0])
             to_fetch = pc[0][2:11].bitcast(Int(10))
             decoder.async_called(we = Int(1)(0), wdata = Bits(32)(0), addr = to_fetch)
             pc[0] = (pc[0].bitcast(Int(32)) + Int(32)(4)).bitcast(Bits(32))
 
         with Condition(on_branch[0]):
-            log("fetching        | on branch, pc freeze at 0x{:x}", pc[0])
+            log("fetching         | on branch, pc freeze at 0x{:x}", pc[0])
 
 class OnwriteDS(Downstream):
     
