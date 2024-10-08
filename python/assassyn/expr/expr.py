@@ -219,7 +219,7 @@ class Cast(Expr):
         method = Cast.SUBCODES[self.opcode]
         return f'{self.as_operand()} = {method} {self.x.as_operand()} to {self.dtype}'
 
-@ir_builder(node_type='expr')
+@ir_builder
 def log(*args):
     '''The exposed frontend function to instantiate a log operation'''
     assert isinstance(args[0], str)
@@ -271,6 +271,15 @@ class PureInstrinsic(Expr):
             return f'{self.as_operand()} = {fifo}.{self.OPERATORS[self.opcode]}()'
         raise NotImplementedError
 
+    def __getattr__(self, name):
+        if self.opcode == PureInstrinsic.FIFO_PEEK:
+            from ..module import Port
+            port = self.args[0]
+            assert isinstance(port, Port)
+            return port.dtype.attributize(self, name)
+
+        assert False, f"Cannot access attribute {name} on {self}"
+
 
 class Bind(Expr):
     '''The class for binding operations. Function bind is a functional programming concept like
@@ -296,7 +305,7 @@ class Bind(Expr):
         cnt = sum(i.name in fifo_names for i in ports)
         return cnt == len(ports)
 
-    @ir_builder(node_type='expr')
+    @ir_builder
     def async_called(self, **kwargs):
         '''The exposed frontend function to instantiate an async call operation'''
         self._push(**kwargs)

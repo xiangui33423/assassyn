@@ -7,7 +7,7 @@ use std::{
 
 use instructions::FIFOPush;
 // use instructions::FIFOPush;
-use regex::Regex;
+// use regex::Regex;
 
 use crate::{
   backend::common::{create_and_clean_dir, namify, upstreams, Config},
@@ -15,7 +15,7 @@ use crate::{
   ir::{instructions::BlockIntrinsic, node::*, visitor::Visitor, *},
 };
 
-use self::{expr::subcode, expr::Metadata, module::Attribute};
+use self::{expr::subcode, expr::Metadata};
 
 use super::{
   gather::{gather_exprs_externally_used, ExternalUsage, Gather},
@@ -86,7 +86,7 @@ impl<'a, 'b> VerilogDumper<'a, 'b> {
     let d = display.field("d");
     // array buffer
     let q = display.field("q");
-    res.push_str(&format!("  // {}\n", array));
+    res.push_str(&format!("  /* {} */\n", array));
     res.push_str(&declare_array("", array, &q, ";"));
 
     let mut seen = HashSet::new();
@@ -442,16 +442,17 @@ module top (
 );\n\n",
     );
 
-    // memory initializations map
-    let mut mem_init_map: HashMap<BaseNode, String> = HashMap::new(); // array -> init_file_path
-    for module in self.sys.module_iter(ModuleKind::Module) {
-      for attr in module.get_attrs() {
-        if let Attribute::Memory(param) = attr {
-          if let Some(init_file) = &param.init_file {
+    // memory initializations mapS
+    // FIXME(@were): Fix the memory initialization.
+    let mut mem_init_map: HashMap<BaseNode, String> = HashMap::new();
+    // array -> init_file_path
+    for array in self.sys.array_iter() {
+      for attr in array.get_attrs() {
+        if let ArrayAttr::MemoryParams(mp) = attr {
+          if let Some(init_file) = &mp.init_file {
             let mut init_file_path = self.config.resource_base.clone();
             init_file_path.push(init_file);
             let init_file_path = init_file_path.to_str().unwrap();
-            let array = param.array.as_ref::<Array>(self.sys).unwrap();
             mem_init_map.insert(array.upcast(), init_file_path.to_string());
           }
         }
@@ -594,6 +595,10 @@ macro_rules! dump_ref_immwidth {
   };
 }
 
+fn dump_ref(sys: &SysBuilder, value: &BaseNode, with_imm_width: bool) -> String {
+  node_dump_ref(sys, value, vec![], with_imm_width).unwrap()
+}
+
 impl VerilogDumper<'_, '_> {
   fn print_body(&mut self, node: BaseNode) -> String {
     match node.get_kind() {
@@ -657,7 +662,7 @@ module {} (
         NodeKind::Array => {
           let array = interf.as_ref::<Array>(self.sys).unwrap();
           let display = utils::DisplayInstance::from_array(&array);
-          res.push_str(&format!("  // {}\n", array));
+          res.push_str(&format!("  /* {} */\n", array));
           if self.sys.user_contains_opcode(ops, Opcode::Load) {
             res.push_str(&declare_array("input", &array, &display.field("q"), ","));
           }
@@ -829,7 +834,7 @@ module {} (
       self
         .pred_stack
         .push_back(if cond.get_dtype(block.sys).unwrap().get_bits() == 1 {
-          dump_ref!(self.sys, &cond)
+          dump_ref(self.sys, &cond, true)
         } else {
           format!("(|{})", dump_ref!(self.sys, &cond))
         });
@@ -927,55 +932,51 @@ module {} (
       }
 
       Opcode::Log => {
-        let mut format_str = dump_ref!(self.sys, expr.operand_iter().next().unwrap().get_value());
+        // let mut format_str = dump_ref!(self.sys, expr.operand_iter().next().unwrap().get_value());
 
-        let re = Regex::new(r"\{(:.[bxXo]?)?\}").unwrap();
+        // let re = Regex::new(r"\{(:.[bxXo]?)?\}").unwrap();
 
-        let dtypes = expr
-          .operand_iter()
-          .skip(1)
-          .map(|elem| elem.get_value().get_dtype(self.sys).unwrap())
-          .collect::<Vec<_>>();
+        // let dtypes = expr
+        //   .operand_iter()
+        //   .skip(1)
+        //   .map(|elem| elem.get_value().get_dtype(self.sys).unwrap())
+        //   .collect::<Vec<_>>();
 
-        let mut dtype_index = 0;
-        format_str = re
-          .replace_all(&format_str, |caps: &regex::Captures| {
-            let result = if let Some(format_spec) = caps.get(1) {
-              match format_spec.as_str() {
-                ":b" => "%b",
-                ":x" => "%x",
-                ":X" => "%X",
-                ":o" => "%o",
-                ":" => {
-                  if let Some(dtype) = dtypes.get(dtype_index) {
-                    match dtype {
-                      DataType::Int(_) | DataType::UInt(_) | DataType::Bits(_) => "%d",
-                      DataType::Str => "%s",
-                      _ => "?",
-                    }
-                  } else {
-                    "?"
-                  }
-                }
-                _ => {
-                  println!("Unrecognized format specifier: {}", format_spec.as_str());
-                  "?"
-                }
-              }
-            } else if let Some(dtype) = dtypes.get(dtype_index) {
-              match dtype {
-                DataType::Int(_) | DataType::UInt(_) | DataType::Bits(_) => "%d",
-                DataType::Str => "%s",
-                _ => "?",
-              }
-            } else {
-              "?"
-            };
-            dtype_index += 1;
-            result
-          })
-          .into_owned();
-        format_str = format_str.replace('"', "");
+        // let mut dtype_index = 0;
+        // format_str = re
+        //   .replace_all(&format_str, |caps: &regex::Captures| {
+        //     let result = if let Some(format_spec) = caps.get(1) {
+        //       match format_spec.as_str() {
+        //         ":b" => "%b",
+        //         ":x" => "%x",
+        //         ":X" => "%X",
+        //         ":o" => "%o",
+        //         ":" | _ => {
+        //           if let Some(dtype) = dtypes.get(dtype_index) {
+        //             match dtype {
+        //               DataType::Int(_) | DataType::UInt(_) | DataType::Bits(_) => "%d",
+        //               DataType::Str => "%s",
+        //               _ => "?",
+        //             }
+        //           } else {
+        //             "?"
+        //           }
+        //         }
+        //       }
+        //     } else if let Some(dtype) = dtypes.get(dtype_index) {
+        //       match dtype {
+        //         DataType::Int(_) | DataType::UInt(_) | DataType::Bits(_) => "%d",
+        //         DataType::Str => "%s",
+        //         _ => "?",
+        //       }
+        //     } else {
+        //       "?"
+        //     };
+        //     dtype_index += 1;
+        //     result
+        //   })
+        //   .into_owned();
+        // format_str = format_str.replace('"', "");
 
         let mut res = String::new();
 
@@ -991,6 +992,13 @@ module {} (
             .map(|p| format!(" && {}", p))
             .unwrap_or("".to_string())
         ));
+
+        let args = expr
+          .operand_iter()
+          .map(|elem| *elem.get_value())
+          .collect::<Vec<_>>();
+
+        let format_str = utils::parse_format_string(args, expr.sys);
 
         res.push_str(&format!("$display(\"%t\\t[{}]\\t\\t", self.current_module));
         res.push_str(&format_str);
@@ -1008,7 +1016,11 @@ module {} (
       Opcode::Load => {
         let load = expr.as_sub::<instructions::Load>().unwrap();
         let (array_ref, array_idx) = (load.array(), load.idx());
-        format!("array_{}_q[{}]", namify(array_ref.get_name()), dump_ref!(self.sys, &array_idx))
+        format!(
+          "array_{}_q[{}]",
+          namify(array_ref.get_name()),
+          dump_ref(self.sys, &array_idx, true)
+        )
       }
 
       Opcode::Store => {
@@ -1016,9 +1028,9 @@ module {} (
         let (array_ref, array_idx) = (store.array(), store.idx());
         let array_name = namify(array_ref.get_name());
         let pred = self.get_pred().unwrap_or("".to_string());
-        let idx = dump_ref_immwidth!(self.sys, &array_idx);
+        let idx = dump_ref(store.get().sys, &array_idx, true);
         let idx_bits = store.idx().get_dtype(self.sys).unwrap().get_bits();
-        let value = dump_ref!(self.sys, &store.value());
+        let value = dump_ref(store.get().sys, &store.value(), true);
         let value_bits = store.value().get_dtype(self.sys).unwrap().get_bits();
         match self.array_stores.get_mut(&array_name) {
           Some((g_idx, g_value)) => {
@@ -1152,9 +1164,9 @@ module {} (
 
       Opcode::Select => {
         let select = expr.as_sub::<instructions::Select>().unwrap();
-        let cond = dump_ref!(self.sys, &select.cond());
-        let true_value = dump_ref!(self.sys, &select.true_value());
-        let false_value = dump_ref!(self.sys, &select.false_value());
+        let cond = dump_ref(self.sys, &select.cond(), true);
+        let true_value = dump_ref(self.sys, &select.true_value(), true);
+        let false_value = dump_ref(self.sys, &select.false_value(), true);
         format!("{} ? {} : {}", cond, true_value, false_value)
       }
 
