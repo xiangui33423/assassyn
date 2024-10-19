@@ -1516,6 +1516,12 @@ module memory_blackbox_{a} #(
           let pred = self.get_pred().unwrap_or("1".to_string());
           format!(" always_ff @(posedge clk) if (executed && {}) $finish();\n", pred)
         }
+        subcode::BlockIntrinsic::Assert => {
+          let assert = expr.as_sub::<instructions::BlockIntrinsic>().unwrap();
+          let pred = self.get_pred().unwrap_or("1".to_string());
+          let cond = dump_ref!(self.sys, &assert.value().unwrap());
+          format!("  always_ff @(posedge clk) if (executed && {}) assert({});\n", pred, cond)
+        }
         _ => panic!("Unknown block intrinsic: {:?}", intrinsic),
       },
     };
