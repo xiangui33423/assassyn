@@ -84,12 +84,14 @@ def decode_logic(inst):
 
     # Extract all the signals
     # For now, write is always disabled.
-    memory = concat(Bits(1)(0), eqs['lw'] | eqs['lbu'])
+    memory = concat(eqs['sw'], eqs['lw'] | eqs['lbu'])
     # [ unsigned (signed), byte(word) ]
     mem_ext = concat(eqs['lbu'], eqs['lbu']) 
 
     # BInst and JInst are designed for branches.
-    is_branch = is_type[BInst] | is_type[JInst] | eqs['ebreak'] | eqs['jalr'] |  eqs['mret']
+    is_branch = is_type[BInst] | is_type[JInst] | eqs['ebreak'] | eqs['jalr'] | eqs['mret']
+    is_offset_br = is_type[BInst] | eqs['jal'] 
+    link_pc = eqs['jalr'] | eqs['jal']
 
     is_pc_calc = eqs['auipc']
     # Extract all the operands according to the instruction types
@@ -99,7 +101,7 @@ def decode_logic(inst):
     rs2 = rs2_valid.select(views[RInst].view().rs2, Bits(5)(0))
     # imm
     # TODO(@were): Add `SInst` back to this list later.
-    imm_valid = is_type[IInst] | is_type[UInst] | is_type[BInst] | is_type[JInst]
+    imm_valid = is_type[IInst] | is_type[UInst] | is_type[BInst] | is_type[JInst] | is_type[SInst]
 
     imm = Bits(32)(0)
     csr_read = Bits(1)(0)
@@ -131,6 +133,8 @@ def decode_logic(inst):
         cond=cond,
         flip=flip,
         is_branch=is_branch,
+        is_offset_br=is_offset_br,
+        link_pc=link_pc,
         rs1=rs1,
         rs1_valid=rs1_valid,
         rs2=rs2,
