@@ -78,7 +78,6 @@ impl<'a, 'b> VerilogDumper<'a, 'b> {
     for attr in module.get_attrs() {
       if let module::Attribute::MemoryParams(mem) = attr {
         if module.is_downstream() {
-          // 遍历模块的外部接口
           for (interf, _) in module.ext_interf_iter() {
             if interf.get_kind() == NodeKind::Array {
               let array_ref = interf.as_ref::<Array>(self.sys).unwrap();
@@ -96,24 +95,16 @@ impl<'a, 'b> VerilogDumper<'a, 'b> {
       NodeKind::Expr => {
         let expr = node.as_ref::<Expr>(self.sys).unwrap();
         if expr.get_opcode() == Opcode::Load {
-          // 特殊处理 Opcode::Load 表达式
           let id = namify(&expr.upcast().to_string(self.sys));
           let ty = expr.dtype();
-          //let load = expr.as_sub::<instructions::Load>().unwrap();
-          //let array_ref = load.array();
-          //let array_name = namify(&array_ref.get_name());
-          // 声明变量
           res.push_str(&declare_logic(ty, &id));
-          // 生成不带索引的赋值语句
           res.push_str(&format!("  assign {} = dataout;\n", id));
         } else {
-          // 对于其他表达式，调用原有的 print_body 函数
           res.push_str(&self.print_body(node));
         }
       }
       NodeKind::Block => {
         let block = node.as_ref::<Block>(self.sys).unwrap();
-        // 处理块的条件或循环
         let skip = if let Some(cond) = block.get_condition() {
           self
             .pred_stack
@@ -131,11 +122,9 @@ impl<'a, 'b> VerilogDumper<'a, 'b> {
         } else {
           0
         };
-        // 递归地处理块内的元素
         for elem in block.body_iter().skip(skip) {
           self.process_node(elem, res);
         }
-        // 弹出块的条件
         self.pred_stack.pop_back();
       }
       _ => {
@@ -198,6 +187,7 @@ impl<'a, 'b> VerilogDumper<'a, 'b> {
       .collect::<Vec<_>>();
 
     let scalar_bits = array.scalar_ty().get_bits();
+    let array_size = array.get_size();
 
     drivers.iter().for_each(|edge| {
       res.push_str(&declare_logic(array.scalar_ty(), &edge.field("d")));
@@ -244,15 +234,25 @@ impl<'a, 'b> VerilogDumper<'a, 'b> {
         res.push_str("    begin\n");
         for (idx, value) in initializer.iter().enumerate() {
           let elem_init = value.as_ref::<IntImm>(self.sys).unwrap().get_value();
-          res.push_str(&format!("      {q}[{idx}] <= {elem_init};\n",));
+          let slice = format!("{}:{}", (idx + 1) * scalar_bits - 1, idx * scalar_bits);
+          res.push_str(&format!("      {q}[{slice}] <= {scalar_bits}'d{elem_init};\n",));
         }
         res.push_str("    end\n");
       } else {
+        let init_bits = array.get_flattened_size();
         // Initialize to 0
-        res.push_str(&format!("      {q} <= '{{default : {scalar_bits}'d0}};\n",));
+        res.push_str(&format!("      {q} <= {init_bits}'d0;\n",));
       }
       // Dump the array write
-      res.push_str(&format!("    else if ({w}) {q}[{widx}] <= {d};\n\n",));
+      res.push_str(&format!("    else if ({w}) begin\n\n",));
+      res.push_str(&format!("      case ({widx})\n"));
+      for i in 0..array_size {
+        let slice = format!("{}:{}", (i + 1) * scalar_bits - 1, i * scalar_bits);
+        res.push_str(&format!("        {i} : {q}[{slice}] <= {d};\n"));
+      }
+      res.push_str("        default: ;\n");
+      res.push_str("      endcase\n");
+      res.push_str("    end\n");
     }
 
     res
@@ -622,7 +622,7 @@ impl<'a, 'b> VerilogDumper<'a, 'b> {
       let q = display.field("q");
       if *kind == ExposeKind::Output {
         let o = display.field("exposed");
-        res.push_str(&format!("  assign {o} = {q}[0];\n"));
+        res.push_str(&format!("  assign {o} = {q};\n"));
       }
     }
 
@@ -659,12 +659,12 @@ logic rst_n;
     )?;
 
     for (exposed_node, kind) in self.sys.exposed_nodes() {
-      let exposed_nodes_ref = exposed_node.as_ref::<Array>(self.sys).unwrap();
-      let display = utils::DisplayInstance::from_array(&exposed_nodes_ref);
-      let msb = exposed_nodes_ref.scalar_ty().get_bits() - 1;
+      let array_ref = exposed_node.as_ref::<Array>(self.sys).unwrap();
+      let display = utils::DisplayInstance::from_array(&array_ref);
+      let bits = array_ref.scalar_ty().get_bits() * array_ref.get_size() - 1;
       if *kind == ExposeKind::Output {
         let o = display.field("exposed");
-        fd.write_all(format!("logic [{msb}:0]{o};\n",).as_bytes())?;
+        fd.write_all(format!("logic [{bits}:0]{o};\n",).as_bytes())?;
       }
     }
 
@@ -677,7 +677,9 @@ initial begin
   #150;
   rst_n = 1'b1;
   #{threashold};
+  `ifndef SYNTHESIS
   $finish();
+  `endif
 end
 
 always #50 clk <= !clk;
@@ -719,6 +721,7 @@ fn node_dump_ref(
   node: &BaseNode,
   _: Vec<NodeKind>,
   immwidth: bool,
+  signed: bool,
 ) -> Option<String> {
   match node.get_kind() {
     NodeKind::Array => {
@@ -745,7 +748,13 @@ fn node_dump_ref(
       let dtype = node.get_dtype(sys).unwrap();
       let raw = namify(&node.to_string(sys));
       let res = match dtype {
-        DataType::Int(_) => format!("$signed({})", raw),
+        DataType::Int(_) => {
+          if signed {
+            format!("$signed({})", raw)
+          } else {
+            raw
+          }
+        }
         _ => raw,
       };
       Some(res)
@@ -754,20 +763,15 @@ fn node_dump_ref(
   }
 }
 
-macro_rules! dump_ref {
-  ($sys:expr, $value:expr) => {
-    node_dump_ref($sys, $value, vec![], false).unwrap()
-  };
-}
-
-macro_rules! dump_ref_immwidth {
-  ($sys:expr, $value:expr) => {
-    node_dump_ref($sys, $value, vec![], true).unwrap()
-  };
-}
-
 fn dump_ref(sys: &SysBuilder, value: &BaseNode, with_imm_width: bool) -> String {
-  node_dump_ref(sys, value, vec![], with_imm_width).unwrap()
+  node_dump_ref(sys, value, vec![], with_imm_width, false).unwrap()
+}
+
+/// This is a legacy hack helper function to dump the arithmetic expressions.
+/// Verilog-2001 does not support $signed(x)[slice] syntax. So we avoid using
+/// $signed(x[slice]) in most of the code.
+fn dump_arith_ref(sys: &SysBuilder, value: &BaseNode) -> String {
+  node_dump_ref(sys, value, vec![], true, true).unwrap()
 }
 
 impl VerilogDumper<'_, '_> {
@@ -1134,7 +1138,6 @@ module memory_blackbox_{a} #(
         } else {
           res.push_str(
             r#"
-  
     
         always @ (posedge clk) begin
             if (!rst_n) begin
@@ -1165,7 +1168,7 @@ module memory_blackbox_{a} #(
         .push_back(if cond.get_dtype(block.sys).unwrap().get_bits() == 1 {
           dump_ref(self.sys, &cond, true)
         } else {
-          format!("(|{})", dump_ref!(self.sys, &cond))
+          format!("(|{})", dump_ref(self.sys, &cond, false))
         });
       1
     } else if let Some(cycle) = block.get_cycle() {
@@ -1196,6 +1199,8 @@ module memory_blackbox_{a} #(
   }
 
   fn visit_expr(&mut self, expr: ExprRef<'_>) -> Option<String> {
+    // If an expression is externally used by another downstream module,
+    // we need to generate the corresponding assignment logic here.
     let (decl, expose) =
       if expr.get_opcode().is_valued() && !matches!(expr.get_opcode(), Opcode::Bind) {
         let id = namify(&expr.upcast().to_string(self.sys));
@@ -1219,9 +1224,9 @@ module memory_blackbox_{a} #(
         let bin = expr.as_sub::<instructions::Binary>().unwrap();
         format!(
           "{} {} {}",
-          dump_ref!(self.sys, &bin.a()),
+          dump_arith_ref(self.sys, &bin.a()),
           bin.get_opcode(),
-          dump_ref!(self.sys, &bin.b())
+          dump_arith_ref(self.sys, &bin.b())
         )
       }
 
@@ -1231,16 +1236,16 @@ module memory_blackbox_{a} #(
           subcode::Unary::Neg => "-",
         };
         let uop = expr.as_sub::<instructions::Unary>().unwrap();
-        format!("{}{}", dump, dump_ref!(self.sys, &uop.x()))
+        format!("{}{}", dump, dump_arith_ref(self.sys, &uop.x()))
       }
 
       Opcode::Compare { .. } => {
         let cmp = expr.as_sub::<instructions::Compare>().unwrap();
         format!(
           "{} {} {}",
-          dump_ref!(self.sys, &cmp.a()),
+          dump_arith_ref(self.sys, &cmp.a()),
           cmp.get_opcode(),
-          dump_ref!(self.sys, &cmp.b())
+          dump_arith_ref(self.sys, &cmp.b())
         )
       }
 
@@ -1285,9 +1290,17 @@ module memory_blackbox_{a} #(
 
         res.push_str(&format!("$display(\"%t\\t[{}]\\t\\t", self.current_module));
         res.push_str(&format_str);
-        res.push_str("\", $time - 200, ");
+        res.push_str(
+          "\",
+`ifndef SYNTHESIS
+  $time - 200
+`else
+  $time
+`endif
+, ",
+        );
         for elem in expr.operand_iter().skip(1) {
-          res.push_str(&format!("{}, ", dump_ref!(self.sys, elem.get_value())));
+          res.push_str(&format!("{}, ", dump_ref(self.sys, elem.get_value(), false)));
         }
         res.pop();
         res.pop();
@@ -1299,11 +1312,28 @@ module memory_blackbox_{a} #(
       Opcode::Load => {
         let load = expr.as_sub::<instructions::Load>().unwrap();
         let (array_ref, array_idx) = (load.array(), load.idx());
-        format!(
-          "array_{}_q[{}]",
-          namify(array_ref.get_name()),
-          dump_ref(self.sys, &array_idx, true)
-        )
+        let size = array_ref.get_size();
+        let bits = array_ref.scalar_ty().get_bits() as u64;
+        let name = format!("array_{}_q", namify(array_ref.get_name()));
+
+        match load.idx().get_kind() {
+          NodeKind::IntImm => {
+            let imm = array_idx.as_ref::<IntImm>(self.sys).unwrap().get_value();
+            format!("{name}[{}:{}]", bits * (imm + 1) - 1, imm * bits)
+          }
+          NodeKind::Expr => {
+            let mut res = "'x".into();
+            let idx = dump_ref(load.get().sys, &array_idx, true);
+            for i in 0..size {
+              let slice = format!("{name}[{}:{}]", ((i + 1) as u64) * bits - 1, (i as u64) * bits);
+              res = format!("{i} == {idx} ? {slice} : ({res})");
+            }
+            res
+          }
+          _ => {
+            panic!("Unexpected reference type: {:?}", load.idx());
+          }
+        }
       }
 
       Opcode::Store => {
@@ -1335,7 +1365,7 @@ module memory_blackbox_{a} #(
         let fifo = push.fifo();
         let fifo_name = format!("{}_{}", namify(fifo.get_module().get_name()), fifo_name!(fifo));
         let pred = self.get_pred().unwrap_or("".to_string());
-        let value = dump_ref!(self.sys, &push.value());
+        let value = dump_ref(self.sys, &push.value(), false);
         match self.fifo_pushes.get_mut(&fifo_name) {
           Some(fps) => fps.push(pred, value, fifo.scalar_ty().get_bits()),
           None => {
@@ -1406,23 +1436,23 @@ module memory_blackbox_{a} #(
 
       Opcode::Slice => {
         let slice = expr.as_sub::<instructions::Slice>().unwrap();
-        let a = dump_ref!(self.sys, &slice.x());
-        let l = dump_ref!(self.sys, &slice.l_intimm().upcast());
-        let r = dump_ref!(self.sys, &slice.r_intimm().upcast());
+        let a = dump_ref(self.sys, &slice.x(), false);
+        let l = dump_ref(self.sys, &slice.l_intimm().upcast(), false);
+        let r = dump_ref(self.sys, &slice.r_intimm().upcast(), false);
         format!("{}[{}:{}]", a, r, l)
       }
 
       Opcode::Concat => {
         let concat = expr.as_sub::<instructions::Concat>().unwrap();
-        let a = dump_ref_immwidth!(self.sys, &concat.msb());
-        let b = dump_ref_immwidth!(self.sys, &concat.lsb());
+        let a = dump_ref(self.sys, &concat.msb(), true);
+        let b = dump_ref(self.sys, &concat.lsb(), true);
         format!("{{{}, {}}}", a, b)
       }
 
       Opcode::Cast { .. } => {
         let dbits = expr.dtype().get_bits();
         let cast = expr.as_sub::<instructions::Cast>().unwrap();
-        let a = dump_ref!(self.sys, &cast.x());
+        let a = dump_ref(self.sys, &cast.x(), false);
         let src_dtype = cast.src_type();
         let pad = dbits - src_dtype.get_bits();
         match cast.get_opcode() {
@@ -1461,12 +1491,12 @@ module memory_blackbox_{a} #(
       Opcode::Select1Hot => {
         let dbits = expr.dtype().get_bits();
         let select1hot = expr.as_sub::<instructions::Select1Hot>().unwrap();
-        let cond = dump_ref!(self.sys, &select1hot.cond());
+        let cond = dump_ref(self.sys, &select1hot.cond(), false);
         select1hot
           .value_iter()
           .enumerate()
           .map(|(i, elem)| {
-            let value = dump_ref!(self.sys, &elem);
+            let value = dump_ref(self.sys, &elem, false);
             format!("({{{}{{{}[{}] == 1'b1}}}} & {})", dbits, cond, i, value)
           })
           .collect::<Vec<_>>()
@@ -1476,12 +1506,18 @@ module memory_blackbox_{a} #(
       Opcode::BlockIntrinsic { intrinsic } => match intrinsic {
         subcode::BlockIntrinsic::Finish => {
           let pred = self.get_pred().unwrap_or("1".to_string());
-          format!(" always_ff @(posedge clk) if (executed && {}) $finish();\n", pred)
+          format!(
+            "
+`ifndef SYNTHESIS
+  always_ff @(posedge clk) if (executed && {}) $finish();
+`endif\n",
+            pred
+          )
         }
         subcode::BlockIntrinsic::Assert => {
           let assert = expr.as_sub::<instructions::BlockIntrinsic>().unwrap();
           let pred = self.get_pred().unwrap_or("1".to_string());
-          let cond = dump_ref!(self.sys, &assert.value().unwrap());
+          let cond = dump_ref(self.sys, &assert.value().unwrap(), false);
           format!("  always_ff @(posedge clk) if (executed && {}) assert({});\n", pred, cond)
         }
         _ => panic!("Unknown block intrinsic: {:?}", intrinsic),
@@ -1531,6 +1567,8 @@ pub fn elaborate(sys: &SysBuilder, config: &Config) -> Result<(), Error> {
 
   generate_cpp_testbench(&verilog_name, sys, config)?;
 
+  // We need the topological order across all the downstream modules so that we
+  // make sure acyclic combinational logic is generated.
   let topo = topo_sort(sys);
   let topo = topo
     .into_iter()
