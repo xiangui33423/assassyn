@@ -1220,12 +1220,21 @@ module memory_blackbox_{a} #(
     let mut is_pop = None;
 
     let body = match expr.get_opcode() {
-      Opcode::Binary { .. } => {
+      Opcode::Binary { binop } => {
+        let dtype = expr.dtype();
         let bin = expr.as_sub::<instructions::Binary>().unwrap();
         format!(
           "{} {} {}",
           dump_arith_ref(self.sys, &bin.a()),
-          bin.get_opcode(),
+          if matches!(binop, subcode::Binary::Shr) {
+            if dtype.is_signed() {
+              ">>>".into()
+            } else {
+              ">>".into()
+            }
+          } else {
+            binop.to_string()
+          },
           dump_arith_ref(self.sys, &bin.b())
         )
       }
