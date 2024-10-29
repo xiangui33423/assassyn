@@ -1,7 +1,7 @@
 ''' A simplest single issue RISCV CPU, which has no operand buffer.
 '''
-
-import pytest
+import os
+import shutil
 
 from assassyn.frontend import *
 from assassyn.backend import *
@@ -12,8 +12,9 @@ from decoder import *
 from writeback import *
 from memory_access import *
 
-offset = None
-data_offset = None
+offset = UInt(32)(0)
+# data_offset = None
+current_path = os.path.dirname(os.path.abspath(__file__))
 
 class Execution(Module):
     
@@ -34,6 +35,7 @@ class Execution(Module):
         mem_bypass_reg: Array,
         mem_bypass_data: Array,
         reg_onwrite: Array,
+        offset_reg: Array,
         rf: Array, 
         csr_f: Array,
         memory: Module, 
@@ -184,7 +186,7 @@ class Execution(Module):
         is_memory = memory_read | memory_write
 
         # This `is_memory` hack is to evade rust's overflow check.
-        addr = (result.bitcast(UInt(32)) - is_memory.select(data_offset, UInt(32)(0))).bitcast(Bits(32))
+        addr = (result.bitcast(UInt(32)) - is_memory.select(offset_reg[0].bitcast(UInt(32)), UInt(32)(0))).bitcast(Bits(32))
         request_addr = is_memory.select(addr[2:2+depth_log-1].bitcast(UInt(depth_log)), UInt(depth_log)(0))
 
         with Condition(memory_read):
@@ -239,7 +241,7 @@ class Decoder(Module):
 class Fetcher(Module):
     
     def __init__(self):
-        super().__init__(ports={})
+        super().__init__(ports={}, no_arbiter=True)
         self.name = 'F'
 
     @module.combinational
@@ -305,35 +307,49 @@ class Onwrite(Downstream):
         log("ownning: {:02}      | releasing: {:02}|", ex_rd, wb_rd)
         reg_onwrite[0] = reg_onwrite[0] ^ ex_bit ^ wb_bit
 
+class MemUser(Module):
+    def __init__(self, width):
+        super().__init__(
+            ports={'rdata': Port(Bits(width))}, 
+        )
+    @module.combinational
+    def build(self):
+        width = self.rdata.dtype.bits
+        rdata = self.pop_all_ports(False)
+        rdata = rdata.bitcast(Int(width))
+        offset_reg = RegArray(Bits(width), 1)
+        offset_reg[0] = rdata.bitcast(Bits(width))
+        return offset_reg
+
+
 class Driver(Module):
-    
     def __init__(self):
         super().__init__(ports={})
-
     @module.combinational
-    def build(self, fetcher: Module):
-        fetcher.async_called()
+    def build(self, fetcher: Module, user: Module):
+        init_reg = RegArray(Int(1), 1, initializer=[1])
+        init_cache = SRAM(width=32, depth=32, init_file=f"{current_path}/tmp/workload.init")
+        init_cache.name = 'init_cache'
+        init_cache.build(we=Bits(1)(0), re=init_reg[0].bitcast(Bits(1)), wdata=Bits(32)(0), addr=Bits(5)(0), user=user)
+        # Initialze offset at first cycle
+        with Condition(init_reg[0]==Int(1)(1)):
+            init_cache.bound.async_called()
+            init_reg[0] = Int(1)(0)
+        # Async_call after first cycle
+        with Condition(init_reg[0] == Int(1)(0)):
+            fetcher.async_called()
 
-def run_cpu(resource_base, workload, depth_log):
+def build_cpu(depth_log):
     sys = SysBuilder('minor_cpu')
 
     with sys:
-
-        with open(f'{resource_base}/{workload}.config') as f:
-            global offset, data_offset
-            raw = f.readline()
-            raw = raw.replace('offset:', "'offset':").replace('data_offset:', "'data_offset':")
-            offsets = eval(raw)
-            print(offsets)
-            offset = offsets['offset']
-            data_offset = offsets['data_offset']
-            offset = UInt(32)(offset)
-            data_offset = UInt(32)(data_offset)
-
         # Data Types
         bits1   = Bits(1)
         bits5   = Bits(5)
         bits32  = Bits(32)
+
+        user = MemUser(32)
+        offset_reg = user.build()
 
         fetcher = Fetcher()
         pc_reg, pc_addr = fetcher.build()
@@ -359,7 +375,6 @@ def run_cpu(resource_base, workload, depth_log):
 
         executor = Execution()
 
-        data_init = f'{workload}.data' if os.path.exists(f'{resource_base}/{workload}.data') else None
 
         br_sm, ex_bypass, wb, exec_rd, ex_valid = executor.build(
             pc = pc_reg,
@@ -368,11 +383,12 @@ def run_cpu(resource_base, workload, depth_log):
             reg_onwrite = reg_onwrite,
             mem_bypass_reg = mem_bypass_reg,
             mem_bypass_data = mem_bypass_data,
+            offset_reg = offset_reg,
             rf = reg_file,
             csr_f = csr_file,
             memory = memory_access,
             writeback = writeback,
-            data = data_init,
+            data = f'{current_path}/tmp/workload.data',
             depth_log = depth_log
         )
 
@@ -385,12 +401,12 @@ def run_cpu(resource_base, workload, depth_log):
         decoder = Decoder()
         on_br = decoder.build(executor=executor, br_sm=br_sm)
 
-        fetcher_impl.build(on_br, br_sm, ex_bypass, ex_valid, pc_reg, pc_addr, decoder, f'{workload}.exe', depth_log)
+        fetcher_impl.build(on_br, br_sm, ex_bypass, ex_valid, pc_reg, pc_addr, decoder, f'{current_path}/tmp/workload.exe', depth_log)
 
         onwrite_downstream = Onwrite()
-    
+
         driver = Driver()
-        driver.build(fetcher)
+        driver.build(fetcher, user)
 
         onwrite_downstream.build(
             reg_onwrite=reg_onwrite,
@@ -401,13 +417,24 @@ def run_cpu(resource_base, workload, depth_log):
     print(sys)
     conf = config(
         verilog=utils.has_verilator(),
-        sim_threshold=1000000,
-        idle_threshold=1000000,
-        resource_base=resource_base
+        sim_threshold=100000,
+        idle_threshold=100000,
+        resource_base=f'{utils.repo_path()}/examples/minor-cpu/workloads'
     )
 
     simulator_path, verilog_path = elaborate(sys, **conf)
 
+    # Return the built system and relevant components
+    return sys, simulator_path, verilog_path
+
+
+def run_cpu(sys, simulator_path, verilog_path):
+    with sys:
+        with open(f'{current_path}/tmp/workload.config') as f:
+            raw = f.readline()
+            raw = raw.replace('offset:', "'offset':").replace('data_offset:', "'data_offset':")
+            offsets = eval(raw)
+            open(f'{current_path}/tmp/workload.init', 'w').write(hex(offsets['data_offset'])[2:])
     report = False
 
     if report:
@@ -417,32 +444,40 @@ def run_cpu(resource_base, workload, depth_log):
         raw, tt = utils.run_verilator(verilog_path, True)
         open(f'{workload}.verilog.log', 'w').write(raw)
     else:
-        raw = utils.run_simulator(simulator_path, False)
+        raw = utils.run_simulator(simulator_path)
         open('raw.log', 'w').write(raw)
-        check(resource_base, workload)
-        raw = utils.run_verilator(verilog_path, False)
+        check()
+        raw = utils.run_verilator(verilog_path)
         open('raw.log', 'w').write(raw)
-        check(resource_base, workload)
+        check()
         os.remove('raw.log')
 
 
+def check():
 
-def check(resource_base, test):
-
-    script = f'{resource_base}/{test}.sh'
+    script = f'{current_path}/tmp/workload.sh'
     if os.path.exists(script):
-        res = subprocess.run([script, 'raw.log', f'{resource_base}/{test}.data'])
+        res = subprocess.run([script, 'raw.log', f'{current_path}/tmp/workload.data'])
     else:
-        script = f'{resource_base}/../utils/find_pass.sh'
+        script = f'{current_path}/../utils/find_pass.sh'
         res = subprocess.run([script, 'raw.log'])
-    assert res.returncode == 0, f'Failed test {test}'
+    assert res.returncode == 0, f'Failed test: {res.returncode}'
     print('Test passed!!!')
     
 
 if __name__ == '__main__':
+    # Build the CPU Module only once
+    sys, simulator_path, verilog_path = build_cpu(depth_log=12)
+    print("minor-CPU built successfully!")
+    # Create tmp directory and clean it
+    if os.path.exists(f'{current_path}/tmp'):
+        shutil.rmtree(f'{current_path}/tmp')
+    os.mkdir(f'{current_path}/tmp')
+    # Define workloads
     wl_path = f'{utils.repo_path()}/examples/minor-cpu/workloads'
     workloads = [
         '0to100',
+        # 'multiply',
         #'dhrystone',
         #'median',
         #'multiply',
@@ -451,11 +486,21 @@ if __name__ == '__main__':
         #'towers',
         #'vvadd',
     ]
+    # Iterate workloads
     for wl in workloads:
-        run_cpu(wl_path, wl, 16)
+        # Copy workloads to tmp directory and rename to workload.
+        shutil.copy(f'{wl_path}/{wl}.exe', f'{current_path}/tmp/workload.exe')
+        shutil.copy(f'{wl_path}/{wl}.data', f'{current_path}/tmp/workload.data')
+        shutil.copy(f'{wl_path}/{wl}.config', f'{current_path}/tmp/workload.config')
+        shutil.copy(f'{wl_path}/{wl}.sh', f'{current_path}/tmp/workload.sh')
+        run_cpu(sys, simulator_path, verilog_path)
+    print("minor-CPU workloads ran successfully!")
 
+    #================================================================================================
+    # The same logic should be able to apply to the tests below, while the offsets&data_offsets should be changed accordingly.
+    # Define test cases
     test_cases = [
-        #'rv32ui-p-add',
+        # 'rv32ui-p-add',
         #'rv32ui-p-addi',
         #'rv32ui-p-and',
         #'rv32ui-p-andi',
@@ -485,9 +530,16 @@ if __name__ == '__main__':
         #'rv32ui-p-lbu',#TO DEBUG&TO CHECK
         #'rv32ui-p-sb',#TO CHECK
     ]
-
     tests = f'{utils.repo_path()}/examples/minor-cpu/unit-tests'
-
+    # Iterate test cases
     for case in test_cases:
-        run_cpu(tests, case, 9)
+        # Copy test cases to tmp directory and rename to workload.
+        shutil.copy(f'{tests}/{case}.exe', f'{current_path}/tmp/workload.exe')
+        shutil.copy(f'{tests}/{case}.data', f'{current_path}/tmp/workload.data')
+        shutil.copy(f'{tests}/{case}.config', f'{current_path}/tmp/workload.config')
+        shutil.copy(f'{tests}/{case}.sh', f'{current_path}/tmp/workload.sh')
+        run_cpu(sys, simulator_path, verilog_path)
+    print("minor-CPU tests ran successfully!")
+
+
 
