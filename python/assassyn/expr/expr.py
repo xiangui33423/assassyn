@@ -326,12 +326,19 @@ class Bind(Expr):
         for name, depth in kwargs.items():
             if not isinstance(depth, int):
                 raise ValueError(f"Depth for {name} must be an integer")
+            matches = 0
+            available_fifos = []
             for push in self.pushes:
+                available_fifos.append(push.fifo.name)
                 if push.fifo.name == name:
                     push.fifo_depth = depth
-                    break
-            else:
-                raise ValueError(f"No push found for FIFO named {name}")
+                    matches = matches + 1
+                    #break
+            if matches == 0:
+                raise ValueError(f"No push found for FIFO named {name}. "
+                                 f"Available FIFO names are: {available_fifos}")
+
+
         return self
 
     def __repr__(self):
