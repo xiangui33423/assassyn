@@ -74,8 +74,19 @@ class Execution(Module):
         self.exe_valid = ex_valid
 
 
-        raw_id = [(3860, 9), (773, 1) ,(1860, 15) , (384,10) , (944 , 11) , (928 , 12) , (772 , 4 ) , (770 ,13),(771,14),(768,8) ,(833,2)]
-        #mtvec 1 mepc 2 mcause 3 mie 4 mip 5 mtval 6 mscratc 7 mstatus 8 mhartid 9 satp 10 pmpaddr0 11  pmpcfg0 12 medeleg 13 mideleg 14 unkonwn 15
+        raw_id = [
+          (773, 1), #mtvec
+          (833,2), #mepc
+          (772, 4), #mie
+          (768,8), #mstatus
+          (3860, 9), #mhartid
+          (384, 10), #satp
+          (944, 11), #pmpaddr0
+          (928, 12), #pmpcfg0
+          (770, 13), #medeleg
+          (771, 14), #mideleg
+          (1860, 15), #unknown
+        ]
 
         csr_id = Bits(4)(0)
         for i, j in raw_id:
@@ -98,7 +109,9 @@ class Execution(Module):
         # TODO(@were): This is a hack to avoid post wait_until checks.
         rd = signals.rd
 
-        is_ebreak = signals.rs1_valid & signals.imm_valid & ((signals.imm == Bits(32)(1))|(signals.imm == Bits(32)(0))) & (signals.alu == Bits(16)(0))
+        is_ebreak = signals.rs1_valid & signals.imm_valid & \
+                    ((signals.imm == Bits(32)(1)) | (signals.imm == Bits(32)(0))) & \
+                    (signals.alu == Bits(16)(0))
         with Condition(is_ebreak):
             log('ebreak | halt | ecall')
             finish()
@@ -211,6 +224,7 @@ class Execution(Module):
                             csr_new = csr_new,
                             mem_ext = signals.mem_ext)
         
+        wb.set_fifo_depth(is_memory_read = 2, result = 2, rd = 2, is_csr = 2, csr_id = 2, csr_new = 2, mem_ext = 2)
 
         with Condition(rd != Bits(5)(0)):
             log("own x{:02}          |", rd)
@@ -236,7 +250,7 @@ class Decoder(Module):
         br_sm[0] = signals.is_branch
 
         e_call = executor.async_called(signals=signals, fetch_addr=fetch_addr)
-        e_call.bind.set_fifo_depth(signals=3, fetch_addr=3)
+        e_call.bind.set_fifo_depth(signals=2, fetch_addr=2)
 
         return signals.is_branch
 
@@ -279,7 +293,7 @@ class FetcherImpl(Downstream):
         icache.name = 'icache'
 
         new_cnt = ongoing[0] - (ex_valid.optional(Bits(1)(0))).select(Int(8)(1), Int(8)(0))
-        real_fetch = should_fetch & (new_cnt < Int(8)(5))
+        real_fetch = should_fetch & (new_cnt < Int(8)(2))
 
         icache.build(Bits(1)(0), real_fetch, to_fetch[2:2+depth_log-1].bitcast(Int(depth_log)), Bits(32)(0), decoder)
         log("on_br: {}         | ex_by: {}     | fetch: {}      | addr: 0x{:05x} | ongoing: {}",
@@ -509,13 +523,13 @@ if __name__ == '__main__':
     # Define workloads
     wl_path = f'{utils.repo_path()}/examples/minor-cpu/workloads'
     workloads = [
-        #'0to100',
+        '0to100',
         #'multiply',
         #'dhrystone',
         #'median',
         #'multiply',
         #'qsort',
-        'rsort',
+        #'rsort',
         #'towers',
         #'vvadd',
     ]
