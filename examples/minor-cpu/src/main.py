@@ -219,12 +219,11 @@ class Execution(Module):
         wb = writeback.bind(is_memory_read = memory_read,
                             result = signals.link_pc.select(pc0, result),
                             rd = rd,
-                            is_csr = signals.csr_write,
-                            csr_id = csr_id,
-                            csr_new = csr_new,
                             mem_ext = signals.mem_ext)
+        with Condition(signals.csr_write):
+            csr_f[csr_id] = csr_new
         
-        wb.set_fifo_depth(is_memory_read = 2, result = 2, rd = 2, is_csr = 2, csr_id = 2, csr_new = 2, mem_ext = 2)
+        wb.set_fifo_depth(is_memory_read = 2, result = 2, rd = 2,  mem_ext = 2)
 
         with Condition(rd != Bits(5)(0)):
             log("own x{:02}          |", rd)
@@ -471,7 +470,7 @@ def run_cpu(sys, simulator_path, verilog_path, workload='default'):
             value = value[2:]
             open(f'{workspace}/workload.init', 'w').write(value)
 
-    report = True
+    report = False
 
     if report:
         raw = utils.run_simulator(simulator_path, False)
@@ -544,32 +543,32 @@ if __name__ == '__main__':
     # The same logic should be able to apply to the tests below, while the offsets&data_offsets should be changed accordingly.
     # Define test cases
     test_cases = [
-        #'rv32ui-p-add',
-        #'rv32ui-p-addi',
-        #'rv32ui-p-and',
-        #'rv32ui-p-andi',
-        #'rv32ui-p-auipc',
-        #'rv32ui-p-beq',
-        #'rv32ui-p-bge',
-        #'rv32ui-p-bgeu',
-        #'rv32ui-p-blt',
-        #'rv32ui-p-bltu',
-        #'rv32ui-p-bne',
-        #'rv32ui-p-jal',
-        #'rv32ui-p-jalr',
-        #'rv32ui-p-lui',
-        #'rv32ui-p-lw',
-        #'rv32ui-p-or',
-        #'rv32ui-p-ori',
-        #'rv32ui-p-sll',
-        #'rv32ui-p-slli',
-        #'rv32ui-p-sltu',
-        #'rv32ui-p-srai',
-        #'rv32ui-p-srl',
-        #'rv32ui-p-srli',
-        #'rv32ui-p-sub',
-        #'rv32ui-p-sw',
-        #'rv32ui-p-xori',
+        'rv32ui-p-add',
+        'rv32ui-p-addi',
+        'rv32ui-p-and',
+        'rv32ui-p-andi',
+        'rv32ui-p-auipc',
+        'rv32ui-p-beq',
+        'rv32ui-p-bge',
+        'rv32ui-p-bgeu',
+        'rv32ui-p-blt',
+        'rv32ui-p-bltu',
+        'rv32ui-p-bne',
+        'rv32ui-p-jal',
+        'rv32ui-p-jalr',
+        'rv32ui-p-lui',
+        'rv32ui-p-lw',
+        'rv32ui-p-or',
+        'rv32ui-p-ori',
+        'rv32ui-p-sll',
+        'rv32ui-p-slli',
+        'rv32ui-p-sltu',
+        'rv32ui-p-srai',
+        'rv32ui-p-srl',
+        'rv32ui-p-srli',
+        'rv32ui-p-sub',
+        'rv32ui-p-sw',
+        'rv32ui-p-xori',
         #'rv32ui-p-lbu',#TO DEBUG&TO CHECK
         #'rv32ui-p-sb',#TO CHECK
     ]
