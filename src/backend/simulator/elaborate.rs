@@ -111,8 +111,10 @@ impl Visitor<String> for NodeRefDumper {
               }.clone()
             }
             .to_string()
-          } else {
+          } else if expr.dtype().get_bits() <= 64 {
             raw
+          } else {
+            format!("{}.clone()", raw)
           }
         };
         // Lazy evaluation for FIFO peek.
