@@ -346,17 +346,30 @@ impl Visitor<String> for ElaborateModule<'_> {
         let a = dump_rval_ref(self.module_ctx, self.sys, &slice.x());
         let l = slice.l();
         let r = slice.r();
+        let dtype = slice.get().dtype();
+        let mask_bits = "1".repeat(r - l + 1);
+        let result_a = if l < 64 && r < 64 {
+          format!(
+            "let a = ValueCastTo::<u64>::cast(&{});  
+                 let mask = u64::from_str_radix(\"{}\", 2).unwrap();",
+            a, mask_bits,
+          )
+        } else {
+          format!(
+            "let a = ValueCastTo::<BigUint>::cast(&{});  
+                 let mask = BigUint::parse_bytes(\"{}\".as_bytes(), 2).unwrap();",
+            a, mask_bits,
+          )
+        };
         format!(
-          "{{
-              let a = ValueCastTo::<BigUint>::cast(&{});
-              let mask = BigUint::parse_bytes(\"{}\".as_bytes(), 2).unwrap();
-              let res = (a >> {}) & mask;
-              ValueCastTo::<{}>::cast(&res)
+          "{{  
+              {}  
+              let res = (a >> {}) & mask;  
+              ValueCastTo::<{}>::cast(&res)  
             }}",
-          a,
-          "1".repeat(r - l + 1),
+          result_a,
           l,
-          dtype_to_rust_type(&slice.get().dtype()),
+          dtype_to_rust_type(&dtype),
         )
       }
       Opcode::Concat => {
