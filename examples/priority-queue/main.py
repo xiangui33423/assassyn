@@ -18,7 +18,7 @@ class Layer(Module):
     """
     def __init__(self, height:int, level:int, elements:RegArray):
         super().__init__(ports={
-            'action': Port(Int(1)),      # 0 means push, 1 means pop
+            'action': Port(UInt(1)),      # 0 means push, 1 means pop
             'index': Port(Int(32)),
             'value': Port(Int(32))
         }, no_arbiter=True)
@@ -87,8 +87,8 @@ class Layer(Module):
         vacancy_c = action.select(vacancy0-Int(self.height)(1), vacancy0+Int(self.height)(1))
         vacancy_c = (action|occupied1|occupied2).select(vacancy_c, vacancy0)
         vacancy_c = occupied0.select(vacancy_c, vacancy0)      
-        occupied_c = action.select(Int(1)(1), Int(1)(0))
-        occupied_c = (~action&(occupied1|occupied2)).select(Int(1)(1), occupied_c)
+        occupied_c = action.select(UInt(1)(1), UInt(1)(0))
+        occupied_c = (~action&(occupied1|occupied2)).select(UInt(1)(1), occupied_c)
         
         # Next data
         vacancy_c1 = Int(33-self.height)(0).concat(vacancy2).bitcast(Int(32))
@@ -98,9 +98,8 @@ class Layer(Module):
         index_cn = (index_c1<index_c2).select(index1, index2)
         index_o = (action^occupied1).select(index1,index2)        
         index_n = (occupied1^occupied2).select(index_o, index_cn)
-        call_n = (action&occupied0&(vacancy0>Int(self.height)(0))).select(Int(1)(1), Int(1)(0))
-        call_n = (~action&(occupied1|occupied2)).select(Int(1)(1), call_n)
-        
+        call_n = (action&occupied0&(vacancy0>Int(self.height)(0))).select(UInt(1)(1), UInt(1)(0))
+        call_n = (~action&(occupied1|occupied2)).select(UInt(1)(1), call_n)
         self.elements[index0] = type0.bundle(value=value_c, is_occupied=occupied_c, vacancy=vacancy_c)
         if next_elements:
             with Condition(call_n):
@@ -117,7 +116,7 @@ class HeapPush(Module):
     @module.combinational
     def build(self, layer: Layer):
         push_value = self.pop_all_ports(True)
-        bound = layer.bind(action=Int(1)(1), index=Int(32)(0))
+        bound = layer.bind(action=UInt(1)(1), index=Int(32)(0))
         call = bound.async_called(value=push_value)
         call.bind.set_fifo_depth(action=1, index=1, value=1)
 
@@ -128,7 +127,7 @@ class HeapPop(Module):
 
     @module.combinational
     def build(self, layer: Layer):
-        bound = layer.bind(action=Int(1)(0), index=Int(32)(0), value=Int(32)(1))
+        bound = layer.bind(action=UInt(1)(0), index=Int(32)(0), value=Int(32)(1))
         call = bound.async_called()        
         call.bind.set_fifo_depth(action=1, index=1, value=1)
   
