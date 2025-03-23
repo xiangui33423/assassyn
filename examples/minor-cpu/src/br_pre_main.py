@@ -16,6 +16,14 @@ offset = UInt(32)(0)
 current_path = os.path.dirname(os.path.abspath(__file__))
 workspace = f'{current_path}/.workspace/'
 
+NORMAL = Bits(3)(0)
+BRANCH_PREDICT = Bits(3)(1)
+PREDICT_UNVALID = Bits(3)(2)
+PREDICT_JUDGE = Bits(3)(3)
+JALR_WAIT_0=Bits(3)(4)
+JALR_JUMP=Bits(3)(5)
+
+
 class Execution(Module):
     
     def __init__(self):
@@ -45,48 +53,50 @@ class Execution(Module):
         data: str,
         depth_log: int,
         exec_br_dest: Array,
+        pre_is_failed: Array,
 
-             
         ):
 
+        
         csr_id = Bits(4)(0)
- 
-        signals = self.signals.peek()
 
+        signals = self.signals.peek()
         rs1 = signals.rs1
         rs2 = signals.rs2
         rd = signals.rd
-
         on_write = reg_onwrite[0]
-
-         
-
         a_valid =(exec_bypass_reg[0] == rs1) | (mem_bypass_reg[0] == rs1) | ~signals.rs1_valid | (~(on_write >> rs1))[0:0] #| (wb_bypass_reg[0] == rs1)
         a_valid_true = a_valid.select(Bits(1)(1),(wb_bypass_reg[0] == rs1).bitcast(Bits(1))) 
         with Condition(~a_valid):
             log("exec_bypass_reg: x{:02} | mem_bypass_reg: x{:02} | ~signals.rs1_valid: {} | (~(on_write >> rs1))[0:0]: {} |", exec_bypass_reg[0], mem_bypass_reg[0], ~signals.rs1_valid, (~(on_write >> rs1))[0:0])
-
         b_valid =(exec_bypass_reg[0] == rs2) | (mem_bypass_reg[0] == rs2) | ~signals.rs2_valid | (~(on_write >> rs2))[0:0] #| (wb_bypass_reg[0] == rs2)
         b_valid_true = b_valid.select(Bits(1)(1),(wb_bypass_reg[0] == rs2).bitcast(Bits(1) ))
         with Condition(~b_valid):
             log("exec_bypass_reg: x{:02} | mem_bypass_reg: x{:02} | ~signals.rs2_valid: {} | (~(on_write >> rs2))[0:0]: {} |", exec_bypass_reg[0], mem_bypass_reg[0], ~signals.rs2_valid, (~(on_write >> rs2))[0:0])
-
         rd_valid =  (exec_bypass_reg[0] == rd) | (mem_bypass_reg[0] == rd) | ~signals.rd_valid | (~(on_write >> rd))[0:0] 
         rd_valid_true = rd_valid.select(Bits(1)(1),(wb_bypass_reg[0] == rd).bitcast(Bits(1) ))
         with Condition(~rd_valid):
             log("exec_bypass_reg: x{:02} | mem_bypass_reg: x{:02} | ~signals.rd_valid: {} | (~(on_write >> rd))[0:0]: {} |", exec_bypass_reg[0], mem_bypass_reg[0], ~signals.rd_valid, (~(on_write >> rd))[0:0])
-
-        valid = a_valid_true & b_valid_true & rd_valid_true
-
+        valid = a_valid_true & b_valid_true & rd_valid_true 
         with Condition(~valid):
             log("pc: 0x{:08x}   | rs1-x{:02}: {}       | rs2-x{:02}: {}   | rd-x{:02}: {} | backlogged", \
                 self.fetch_addr.peek(), rs1, a_valid, rs2, b_valid, rd, rd_valid)
+        
+        pre_failed = pre_is_failed[0]
 
-        valid = valid 
+        log("pre_failed:  {}|",pre_failed)
+
+
+        valid = valid | pre_failed
         wait_until(valid)
         ex_valid = valid
         self.exe_valid = ex_valid
 
+
+        signals, fetch_addr = self.pop_all_ports(False)
+        pc0 = (fetch_addr.bitcast(Int(32)) + Int(32)(4)).bitcast(Bits(32))
+        alu = pre_failed.select(Bits(16)(1<<RV32I_ALU.ALU_NONE),signals.alu)
+        rd = pre_failed.select(Bits(5)(0),rd)
 
         raw_id = [
           (773, 1), #mtvec
@@ -101,81 +111,38 @@ class Execution(Module):
           (771, 14), #mideleg
           (1860, 15), #unknown
         ]
-
         csr_id = Bits(4)(0)
         for i, j in raw_id:
             csr_id = (signals.imm[0:11] == Bits(12)(i)).select(Bits(4)(j), csr_id)
             csr_id = signals.is_mepc.select(Bits(4)(2), csr_id)
-
         is_csr = Bits(1)(0)
         is_csr = signals.csr_read | signals.csr_write
         csr_new = Bits(32)(0)
         csr_new = signals.csr_write.select( rf[rs1] , csr_new)
         csr_new = signals.is_zimm.select(concat(Bits(27)(0),rs1), csr_new)
 
-        with Condition(is_csr):
-            log("csr_id: {} | new: {:08x} |", csr_id, csr_new)
-
-
-        signals, fetch_addr = self.pop_all_ports(False)
-        
-
-        # TODO(@were): This is a hack to avoid post wait_until checks.
-        rd = signals.rd
-
-        is_ebreak = signals.rs1_valid & signals.imm_valid & \
-                    ((signals.imm == Bits(32)(1)) | (signals.imm == Bits(32)(0))) & \
-                    (signals.alu == Bits(16)(1<<RV32I_ALU.ALU_NONE))        
-
-
-        with Condition(is_ebreak):
-            log('ebreak | halt | ecall')
-            finish()
-
-        is_trap = signals.is_branch & \
-                  signals.is_offset_br & \
-                  signals.imm_valid & \
-                  (signals.imm == Bits(32)(0)) & \
-                  (signals.cond == Bits(RV32I_ALU.CNT)(1 << RV32I_ALU.ALU_TRUE)) & \
-                  (signals.alu == Bits(RV32I_ALU.CNT)(1 << RV32I_ALU.ALU_ADD))
-        with Condition(is_trap):
-            log('trap')
-            finish()
-
-        # Instruction attributes
-
         def bypass(bypass_reg, bypass_data, idx, value):
             return (bypass_reg[0] == idx).select(bypass_data[0], value)
-
         a = bypass(mem_bypass_reg, mem_bypass_data, rs1, rf[rs1])
         a = bypass(exec_bypass_reg, exec_bypass_data, rs1, a)
         a = (rs1 == Bits(5)(0)).select(Bits(32)(0), a)
         a = signals.csr_write.select(Bits(32)(0), a)
         a = (~a_valid).select( wb_bypass_data[0], a)
-
         b = bypass(mem_bypass_reg, mem_bypass_data, rs2, rf[rs2])
         b = bypass(exec_bypass_reg, exec_bypass_data, rs2, b)
         b = (rs2 == Bits(5)(0)).select(Bits(32)(0), b)
         b = is_csr.select(csr_f[csr_id], b)
         b = (~b_valid).select( wb_bypass_data[0], b)
-        
-
-        log('mem_bypass.reg: x{:02} | .data: {:08x}', mem_bypass_reg[0], mem_bypass_data[0])
-        log('exe_bypass.reg: x{:02} | .data: {:08x}', exec_bypass_reg[0], exec_bypass_data[0])
-
         # TODO: To support `auipc`, is_branch will be separated into `is_branch` and `is_pc_calc`.
         alu_a = (signals.is_offset_br | signals.is_pc_calc).select(fetch_addr, a)
         alu_b = signals.imm_valid.select(signals.imm, b)
-
         results = [Bits(32)(0)] * RV32I_ALU.CNT
-
         adder_result = (alu_a.bitcast(Int(32)) + alu_b.bitcast(Int(32))).bitcast(Bits(32))
         le_result = (a.bitcast(Int(32)) < b.bitcast(Int(32))).select(Bits(32)(1), Bits(32)(0))
         eq_result = (a == b).select(Bits(32)(1), Bits(32)(0))
         leu_result = (a < b).select(Bits(32)(1), Bits(32)(0))
         sra_signed_result = (a.bitcast(Int(32)) >> alu_b[0:4].bitcast(Int(5))).bitcast(Bits(32))
         sub_result = (a.bitcast(Int(32)) - b.bitcast(Int(32))).bitcast(Bits(32))
-
         results[RV32I_ALU.ALU_ADD] = adder_result
         results[RV32I_ALU.ALU_SUB] = sub_result
         results[RV32I_ALU.ALU_CMP_LT] = le_result
@@ -190,59 +157,87 @@ class Execution(Module):
         results[RV32I_ALU.ALU_SRA] = sra_signed_result 
         results[RV32I_ALU.ALU_SRA_U] = a >> alu_b[0:4]
         results[RV32I_ALU.ALU_NONE] = Bits(32)(0)
-
         # TODO: Fix this bullshit.
-        alu = signals.alu
         result = alu.select1hot(*results)
 
-        log('pc: 0x{:08x}   |is_offset_br: {}| is_pc_calc: {}|', fetch_addr, signals.is_offset_br, signals.is_pc_calc)
-        log("0x{:08x}       | a: {:08x}  | b: {:08x}   | imm: {:08x} | result: {:08x}", alu, a, b, signals.imm, result)
-        log("0x{:08x}       |a.a:{:08x}  |a.b:{:08x}   | res: {:08x} |", alu, alu_a, alu_b, result)
+        memory_read = pre_failed.select(Bits(1)(0),signals.memory[0:0])
+        memory_write = pre_failed.select(Bits(1)(0),signals.memory[1:1])
 
-        condition = signals.cond.select1hot(*results)
-        condition = signals.flip.select(~condition, condition)
+        with Condition(~pre_failed):
 
-        memory_read = signals.memory[0:0]
-        memory_write = signals.memory[1:1]
+            with Condition(is_csr):
+                log("csr_id: {} | new: {:08x} |", csr_id, csr_new)
 
-        # TODO: Make this stricter later.
-        produced_by_exec = ~memory_read & (rd != Bits(5)(0))
-        exec_bypass_reg[0] = produced_by_exec.select(rd, Bits(5)(0))
-        exec_bypass_data[0] = produced_by_exec.select(result, Bits(32)(0))
+            # TODO(@were): This is a hack to avoid post wait_until checks.
 
-  
-        pc0 = (fetch_addr.bitcast(Int(32)) + Int(32)(4)).bitcast(Bits(32))
-        with Condition(signals.is_branch):
-            exec_br_dest[0] = condition[0:0].select(result, pc0)
-            log("condition: {}.a.b | a: {:08x}  | b: {:08x}   |", condition[0:0], result, pc0)
-            
-        #exec_br_jumped[0] = signals.is_branch.select(condition[0:0], Bits(1)(0))
-        exec_br_jump = signals.is_branch.select(condition[0:0], Bits(1)(0))
+            is_ebreak = signals.rs1_valid & signals.imm_valid & \
+                        ((signals.imm == Bits(32)(1)) | (signals.imm == Bits(32)(0))) & \
+                        (signals.alu == Bits(16)(1<<RV32I_ALU.ALU_NONE))
 
-        is_memory = memory_read | memory_write
+            with Condition(is_ebreak):
+                log('ebreak | halt | ecall')
+                finish()
 
-        # This `is_memory` hack is to evade rust's overflow check.
-        addr = (result.bitcast(UInt(32)) - is_memory.select(offset_reg[0].bitcast(UInt(32)), UInt(32)(0))).bitcast(Bits(32))
-        request_addr = is_memory.select(addr[2:2+depth_log-1].bitcast(UInt(depth_log)), UInt(depth_log)(0))
+            is_trap = signals.is_branch & \
+                      signals.is_offset_br & \
+                      signals.imm_valid & \
+                      (signals.imm == Bits(32)(0)) & \
+                      (signals.cond == Bits(RV32I_ALU.CNT)(1 << RV32I_ALU.ALU_TRUE)) & \
+                      (signals.alu == Bits(RV32I_ALU.CNT)(1 << RV32I_ALU.ALU_ADD))
+            with Condition(is_trap):
+                log('trap')
+                finish()
 
-        with Condition(memory_read):
-            log("mem-read         | addr: 0x{:05x}| line: 0x{:05x} |", result, request_addr)
+            # Instruction attributes
+            log('mem_bypass.reg: x{:02} | .data: {:08x}', mem_bypass_reg[0], mem_bypass_data[0])
+            log('exe_bypass.reg: x{:02} | .data: {:08x}', exec_bypass_reg[0], exec_bypass_data[0])
 
-        with Condition(memory_write):
-            log("mem-write        | addr: 0x{:05x}| line: 0x{:05x} | value: 0x{:08x} | wdada: 0x{:08x}", result, request_addr, a, b)
+            log('pc: 0x{:08x}   |is_offset_br: {}| is_pc_calc: {}|', fetch_addr, signals.is_offset_br, signals.is_pc_calc)
+            log("0x{:08x}       | a: {:08x}  | b: {:08x}   | imm: {:08x} | result: {:08x}", alu, a, b, signals.imm, result)
+            log("0x{:08x}       |a.a:{:08x}  |a.b:{:08x}   | res: {:08x} |", alu, alu_a, alu_b, result)
 
+            condition = signals.cond.select1hot(*results)
+            condition = signals.flip.select(~condition, condition)
+
+            # TODO: Make this stricter later.
+            produced_by_exec = ~memory_read & (rd != Bits(5)(0))
+            exec_bypass_reg[0] = produced_by_exec.select(rd, Bits(5)(0))
+            exec_bypass_data[0] = produced_by_exec.select(result, Bits(32)(0))
+
+            with Condition(signals.is_branch):
+                exec_br_dest[0] = condition[0:0].select(result, pc0)
+                log("condition: {}.a.b | a: {:08x}  | b: {:08x}   |", condition[0:0], result, pc0)
+
+            #exec_br_jumped[0] = signals.is_branch.select(condition[0:0], Bits(1)(0))
+            exec_br_jump = signals.is_branch.select(condition[0:0], Bits(1)(0))
+
+            is_memory = memory_read | memory_write
+            log("is_memory: {} |offset_reg:{} ", is_memory, offset_reg[0])
+
+            # This `is_memory` hack is to evade rust's overflow check.
+            addr = (result.bitcast(UInt(32)) - is_memory.select(offset_reg[0].bitcast(UInt(32)), UInt(32)(0))).bitcast(Bits(32))
+            request_addr = is_memory.select(addr[2:2+depth_log-1].bitcast(UInt(depth_log)), UInt(depth_log)(0))
+
+            with Condition(memory_read):
+                log("mem-read         | addr: 0x{:05x}| line: 0x{:05x} |", result, request_addr)
+
+            with Condition(memory_write):
+                log("mem-write        | addr: 0x{:05x}| line: 0x{:05x} | value: 0x{:08x} | wdada: 0x{:08x}", result, request_addr, a, b)
+
+            with Condition(signals.csr_write):
+                csr_f[csr_id] = csr_new
+
+            with Condition(rd != Bits(5)(0)):
+                log("own x{:02}          |", rd)
+        
         dcache = SRAM(width=32, depth=1<<depth_log, init_file=data)
         dcache.name = 'dcache'
+        
         dcache.build(we=memory_write, re=memory_read, wdata=b, addr=request_addr, user=memory)
         bound = dcache.bound.bind(rd = rd,result = signals.link_pc.select(pc0, result), mem_ext = signals.mem_ext)
         bound.async_called()
-        with Condition(signals.csr_write):
-            csr_f[csr_id] = csr_new
 
-        with Condition(rd != Bits(5)(0)):
-            log("own x{:02}          |", rd)
-
-        return  rd, ex_valid ,exec_br_jump
+        return  rd , ex_valid ,exec_br_jump
 
 class Decoder(Module):
     
@@ -254,20 +249,20 @@ class Decoder(Module):
         self.name = 'D'
 
     @module.combinational
-    def build(self, executor: Module):
+    def build(self, executor: Module, pre_reg: Array):
         inst, fetch_addr = self.pop_all_ports(False)
 
         log("raw: 0x{:08x}  | addr: 0x{:05x} |", inst, fetch_addr)
 
         signals = decode_logic(inst)
- 
+        is_jalr = signals.is_branch & signals.link_pc & (~signals.is_offset_br)
+
+        pre_reg[0] = (fetch_addr.bitcast(Int(32)) + (signals.imm).bitcast(Int(32))  ).bitcast(Bits(32))
         
         e_call = executor.async_called(signals=signals, fetch_addr=fetch_addr)
         e_call.bind.set_fifo_depth(signals=2, fetch_addr=2)
 
-        return signals.is_branch
-
-
+        return signals.is_branch,is_jalr
 
 class Fetcher(Module):
     
@@ -299,41 +294,64 @@ class FetcherImpl(Downstream):
               depth_log: int,
               br_sm: Array,
               br_jump: Array,
-              br_no_jump: Array,
+
               exec_br_jump: Value,
 
+              pre_reg: Array,
+              br_sm_reg: Array,
+              pre_is_failed: Array,
+              is_jalr: Value,
               ):
 
         ongoing = RegArray(Int(8), 1, initializer=[0])
 
+        def is_state(state):
+            return br_sm_reg[0] == state
+
         on_branch = on_branch.optional(Bits(1)(0))
+        is_jalr = is_jalr.optional(Bits(1)(0))
         br_sm[0] = on_branch
-
         br_jump[0] = exec_br_jump.optional(Bits(1)(0))
-        br_no_jump[0] = ~ br_jump[0]
-
-        fetch_valid=RegArray(Bits(1), 1, initializer=[1])
-
-        with Condition(br_sm[0]):
-            fetch_valid[0] = ex_valid.optional(Bits(1)(0)).select(Bits(1)(1), Bits(1)(0))
-        with Condition(~fetch_valid[0]):
-            fetch_valid[0] = Bits(1)(1)
-
-        should_fetch =  (~ on_branch) & (~ br_sm[0] ) & fetch_valid[0]
 
 
-        jump_flag = br_jump[0] & br_no_jump[0]
+
+        fetch_valid = br_sm[0].select(ex_valid.optional(Bits(1)(0)), Bits(1)(1))
+        pre_failed = is_state(PREDICT_JUDGE).select(~br_jump[0], Bits(1)(0))
+
+        unvalid_stop = is_state(BRANCH_PREDICT) & (~fetch_valid)
+        should_fetch =  (~ on_branch) & (~unvalid_stop ) & (~is_state(JALR_WAIT_0))| (is_state(PREDICT_JUDGE)& ~((~pre_failed) & on_branch))  
+        
+        with Condition(is_state(NORMAL)):
+            br_sm_reg_temp = on_branch.select(BRANCH_PREDICT, NORMAL)
+            br_sm_reg_temp = is_jalr.select(JALR_WAIT_0, br_sm_reg_temp)
+            br_sm_reg[0] = br_sm_reg_temp
+        with Condition(is_state(BRANCH_PREDICT)):
+            br_sm_reg[0] = fetch_valid.select(PREDICT_JUDGE, PREDICT_UNVALID)
+        with Condition(is_state(PREDICT_JUDGE)):
+            br_sm_reg_temp = ((~pre_failed) & on_branch & (~is_jalr)).select(BRANCH_PREDICT, NORMAL)
+            br_sm_reg_temp = ((~pre_failed) & on_branch & (is_jalr)).select(JALR_WAIT_0, br_sm_reg_temp)
+            br_sm_reg[0] = br_sm_reg_temp
+        with Condition(is_state(PREDICT_UNVALID)):
+            br_sm_reg[0] = PREDICT_JUDGE
+        with Condition(is_state(JALR_WAIT_0)):
+            br_sm_reg[0] = JALR_JUMP
+        with Condition(is_state(JALR_JUMP)):
+            br_sm_reg[0] = NORMAL
+        log("state: {} | on_branch: {} | fetch_valid: {} | should_fetch: {} |", br_sm_reg[0], on_branch, fetch_valid, should_fetch)
+        
+        pre_is_failed[0] = pre_failed
 
         icache = SRAM(width=32, depth=1<<depth_log, init_file=data)
         icache.name = 'icache'
 
         new_cnt = ongoing[0] - (ex_valid.optional(Bits(1)(0))).select(Int(8)(1), Int(8)(0))
         to_fetch = Bits(32)(0)
-        #to_fetch = should_fetch.select(pc_addr, to_fetch)
-        to_fetch = (jump_flag).select(ex_bypass[0].bitcast(Bits(32)), pc_addr)
+        to_fetch = (is_state(BRANCH_PREDICT) | is_state(PREDICT_UNVALID)).select(pre_reg[0].bitcast(Bits(32)), pc_addr)
+        to_fetch = (pre_failed | is_state(JALR_JUMP)).select(ex_bypass[0].bitcast(Bits(32)), to_fetch)
+
         real_fetch = (should_fetch  )& (new_cnt < Int(8)(3))
-        log("on_br: {}         | br_sm: {}     | br_jump: {}      | fetch: {}      | ex_bypass: 0x{:05x} | ongoing: {} | jump_flag: {}",
-             on_branch, br_sm[0], br_jump[0], should_fetch, ex_bypass[0], ongoing[0],jump_flag)
+        log("on_br: {}         | br_sm: {}     | br_jump: {}      | fetch: {}      | ex_bypass: 0x{:05x} | ongoing: {} ",
+             on_branch, br_sm[0], br_jump[0], should_fetch, ex_bypass[0], ongoing[0])
         icache.build(Bits(1)(0), real_fetch, to_fetch[2:2+depth_log-1].bitcast(Int(depth_log)), Bits(32)(0), decoder)
         log("on_br: {}         | de_by: {}     | fetch: {}      | addr: 0x{:05x} | new_cnt: {}",
             on_branch, ex_valid.optional(Bits(1)(0)), real_fetch, to_fetch, new_cnt)
@@ -396,7 +414,7 @@ class Driver(Module):
             d_call = fetcher.async_called()
 
 def build_cpu(depth_log):
-    sys = SysBuilder('minor_cpu')
+    sys = SysBuilder('minor_cpu_br_pre')
 
     with sys:
         # Data Types
@@ -429,9 +447,13 @@ def build_cpu(depth_log):
 
         exec_br_dest = RegArray(Bits(32), 1)
         exec_br_jumped = RegArray(Bits(1), 1)
-        mem_br_no_jump = RegArray(Bits(1), 1)
+
         d_br_buffer = RegArray(Bits(1), 1)
 
+        pre_reg = RegArray(Bits(32), 1)
+
+        br_pre_sm = RegArray(Bits(3), 1, initializer=[0])
+        pre_justified = RegArray(Bits(1), 1)
 
         writeback = WriteBack()
         wb_rd = writeback.build(reg_file = reg_file)
@@ -457,8 +479,7 @@ def build_cpu(depth_log):
             data = f'{workspace}/workload.data',
             depth_log = depth_log,
             exec_br_dest = exec_br_dest,
-
-
+            pre_is_failed = pre_justified,
         )
 
         memory_access.build(
@@ -471,12 +492,12 @@ def build_cpu(depth_log):
         )
 
         decoder = Decoder()
-        on_br = decoder.build(executor=executor)
+        on_br,is_jalr = decoder.build(executor=executor,pre_reg=pre_reg)
 
         fetcher_impl.build(on_br, exec_br_dest, ex_valid, pc_reg,
                             pc_addr, decoder, f'{workspace}/workload.exe',
                               depth_log, d_br_buffer , exec_br_jumped , 
-                              mem_br_no_jump,exec_br_jump,)
+                              exec_br_jump,pre_reg,br_pre_sm,pre_justified,is_jalr)
 
         onwrite_downstream = Onwrite()
 
@@ -595,7 +616,7 @@ if __name__ == '__main__':
         run_cpu(sys, simulator_path, verilog_path , wl)
     print("minor-CPU workloads ran successfully!")
 
-    # ========================================================================================
+    #================================================================================================
     # The same logic should be able to apply to the tests below, while the offsets&data_offsets should be changed accordingly.
     # Define test cases
     test_cases = [
@@ -632,6 +653,7 @@ if __name__ == '__main__':
     # Iterate test cases
     for case in test_cases:
         # Copy test cases to tmp directory and rename to workload.
+        print(f"Running test: {case}")
         init_workspace(tests, case)
         run_cpu(sys, simulator_path, verilog_path)
     print("minor-CPU tests ran successfully!")
