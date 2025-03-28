@@ -149,6 +149,7 @@ class Driver(Module):
 
         with Condition((block_start[0] ) == addr_type(n//2)):
             with Condition(block_size[0] == addr_type(n//2)):
+                log("finish")
                 finish()
             block_size[0] = block_size[0] << addr_type(1)
             block_start[0] = addr_type(0)
@@ -195,6 +196,8 @@ def test_sort():
     simulator_path, verilator_path = backend.elaborate(sys, **config)
 
     raw = utils.run_simulator(simulator_path)
+    #if utils.has_verilator():
+    #    raw = utils.run_verilator(verilator_path)
 
 
 if __name__ == "__main__":
