@@ -1,18 +1,39 @@
 '''The module provides the implementation of a class that is both IR builder and the system.'''
+
+#pylint: disable=cyclic-import
+
+from __future__ import annotations
 import os
+import typing
 import site
 import inspect
 from decorator import decorator
+
+if typing.TYPE_CHECKING:
+    from .ir.module import Module
+    from .ir.array import Array
+    from .ir.dtype import DType
+    from .ir.value import Value
 
 @decorator
 def ir_builder(func, *args, **kwargs):
     '''The decorator annotates the function whose return value will be inserted into the AST.'''
     res = func(*args, **kwargs)
+
+    # This indicates this res is handled somewhere else, so we do not need to rehandle it
+    if res is None:
+        return res
+
     #pylint: disable=cyclic-import,import-outside-toplevel
-    from .const import Const
+    from .ir.const import Const
     from .utils import package_path
+    from .ir.expr import Expr
 
     if not isinstance(res, Const):
+        if isinstance(res, Expr):
+            res.parent = Singleton.builder.current_block
+            for i in res.operands:
+                Singleton.builder.current_module.add_external(i)
         Singleton.builder.insert_point.append(res)
 
     package_dir = os.path.abspath(package_path())
@@ -36,9 +57,9 @@ class SysBuilder:
     '''The class serves as both the system and the IR builder.'''
 
     name: str  # Name of the system
-    modules: list  # List of modules
+    modules: typing.List[Module]  # List of modules
     downstreams: list  # List of downstream modules
-    arrays: list  # List of arrays
+    arrays: typing.List[Array]  # List of arrays
     _ctx_stack: dict  # Stack for context tracking
     _exposes: dict  # Dictionary of exposed nodes
 
@@ -59,11 +80,29 @@ class SysBuilder:
 
     def enter_context_of(self, ty, entry):
         '''Enter the context of the given type.'''
+        #pylint: disable=import-outside-toplevel
+        from .ir.block import CondBlock
+        if isinstance(entry, CondBlock):
+            self.current_module.add_external(entry.cond)
         self._ctx_stack[ty].append(entry)
 
     def exit_context_of(self, ty):
         '''Exit the context of the given type.'''
         self._ctx_stack[ty].pop()
+
+    def has_driver(self):
+        '''Check if the system has a driver module.'''
+        for i in self.modules:
+            if i.__class__.__name__ == 'Driver':
+                return True
+        return False
+
+    def has_module(self, name):
+        '''Check if a module with the given name exists.'''
+        for i in self.modules:
+            if i.name == name:
+                return i
+        return None
 
     def __init__(self, name):
         self.name = name

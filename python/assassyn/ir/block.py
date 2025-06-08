@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import typing
 
-from .builder import ir_builder, Singleton
-from .utils import identifierize
+from ..builder import ir_builder, Singleton
+from ..utils import identifierize, namify
 
 if typing.TYPE_CHECKING:
     from .module.base import ModuleBase
@@ -18,6 +18,7 @@ class Block:
     kind: int  # Kind of block
     _body: list[Expr]  # List of instructions in the block
     parent: typing.Union[typing.Self, ModuleBase]  # Parent block
+    module: typing.Optional[ModuleBase]  # Module of this block
 
     MODULE_ROOT = 0
     CONDITIONAL = 1
@@ -27,7 +28,7 @@ class Block:
     def __init__(self, kind: int):
         self.kind = kind
         self._body = []
-        self.parent = None
+        self.parent = self.module = None
 
     def __repr__(self):
         Singleton.repr_ident += 2
@@ -43,7 +44,7 @@ class Block:
 
     def as_operand(self):
         '''Dump the block as an operand.'''
-        return f'_{identifierize(self)}'
+        return f'_{namify(identifierize(self))}'
 
     def insert(self, x, elem):
         '''Insert an instruction at the specified position.'''
@@ -60,6 +61,7 @@ class Block:
             parent = Singleton.builder.current_module
         assert parent is not None
         self.parent = parent
+        self.module = Singleton.builder.current_module
         Singleton.builder.enter_context_of('block', self)
         return self
 
@@ -74,7 +76,11 @@ class CondBlock(Block):
 
     def __init__(self, cond):
         super().__init__(Block.CONDITIONAL)
-        self.cond = cond
+        # pylint: disable=import-outside-toplevel
+        from .expr import Operand, Expr
+        self.cond = Operand(cond, self)
+        if isinstance(cond, Expr):
+            cond.users.append(self.cond)
 
     def __repr__(self):
         ident = Singleton.repr_ident * ' '

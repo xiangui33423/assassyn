@@ -1,7 +1,7 @@
 '''The base node module for the overloaded frontend'''
 
 
-from .builder import ir_builder
+from ..builder import ir_builder
 
 #pylint: disable=import-outside-toplevel,cyclic-import
 
@@ -141,7 +141,7 @@ class Value:
         from .expr import Select
         return Select(Select.SELECT, self, true_value, false_value)
 
-    def case(self, cases):
+    def case(self, cases: dict['Value', 'Value']):
         '''The frontend API to create a case operation'''
         assert None in cases, "Expecting a default case"
         res = cases[None]
@@ -163,5 +163,5 @@ class Value:
     def valid(self):
         '''The frontend API to check if this value is valid.
         NOTE: This operation is only usable in downstream modules.'''
-        from .expr import PureInstrinsic
-        return PureInstrinsic(PureInstrinsic.VALUE_VALID, self)
+        from .expr import PureIntrinsic
+        return PureIntrinsic(PureIntrinsic.VALUE_VALID, self)

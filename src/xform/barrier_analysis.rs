@@ -5,7 +5,7 @@ use crate::ir::node::ExprRef;
 use crate::ir::node::IsElement;
 use crate::ir::node::NodeKind;
 use crate::ir::node::Parented;
-use crate::ir::Block;
+// use crate::ir::Block;
 use crate::ir::DataType;
 use crate::ir::Expr;
 use crate::ir::IntImm;
@@ -89,26 +89,26 @@ impl<'sys> Visitor<()> for GatherModulesToCut<'sys> {
   }
 
   fn visit_expr(&mut self, expr: ExprRef<'_>) -> Option<()> {
-    println!("Expr: {:?}", expr.get_key());
+    // println!("Expr: {:?}", expr.get_key());
     match expr.get_opcode() {
       Opcode::BlockIntrinsic { intrinsic } => {
         if intrinsic == subcode::BlockIntrinsic::Barrier {
           self.has_barrier = true;
-          println!("Buffered expr: {:?}", expr.get_operand_value(0).as_ref().unwrap().get_key());
+          // println!("Buffered expr: {:?}", expr.get_operand_value(0).as_ref().unwrap().get_key());
         }
       }
       Opcode::FIFOPush => {
-        let parent_module = expr
-          .get_parent()
-          .as_ref::<Block>(self.sys)
-          .unwrap()
-          .get_module();
-        println!(
-          "----------Push expr_op0: {:?} , expr_op1: {:?} , Parent_module: {:?}",
-          expr.get_operand_value(0).as_ref().unwrap().get_key(),
-          expr.get_operand_value(1).as_ref().unwrap().get_key(),
-          parent_module.as_ref::<Module>(self.sys).unwrap().get_name()
-        );
+        // let parent_module = expr
+        //   .get_parent()
+        //   .as_ref::<Block>(self.sys)
+        //   .unwrap()
+        //   .get_module();
+        // println!(
+        //   "----------Push expr_op0: {:?} , expr_op1: {:?} , Parent_module: {:?}",
+        //   expr.get_operand_value(0).as_ref().unwrap().get_key(),
+        //   expr.get_operand_value(1).as_ref().unwrap().get_key(),
+        //   parent_module.as_ref::<Module>(self.sys).unwrap().get_name()
+        // );
       }
       _ => {}
     }
@@ -215,7 +215,7 @@ impl DependencyGraph {
     //self.expr_hashmap.entry(child);
   }
 
-  pub fn gather_submodules(&mut self, sys: &SysBuilder) {
+  pub fn gather_submodules(&mut self, _sys: &SysBuilder) {
     #[allow(clippy::too_many_arguments)]
     fn dfs(
       graph: &Vec<NodeData>,
@@ -742,7 +742,7 @@ impl<'a> CutModules<'a> {
   }
 
   //#TODO(@derui) add the check for the expr is valid for remapping
-  pub fn is_expr_valid(&self, node_map: &HashMap<usize, BaseNode>, expr: &ExprRef) -> bool {
+  pub fn is_expr_valid(&self, _node_map: &HashMap<usize, BaseNode>, _expr: &ExprRef) -> bool {
     true
   }
 
@@ -764,7 +764,7 @@ impl<'a> CutModules<'a> {
       sub_module_order_rev.sort_by_key(|(k, _)| *k);
 
       //remove the barrier expr
-      for (key, basenode) in container.sub_module_image.barrier_expr.iter() {
+      for (_, basenode) in container.sub_module_image.barrier_expr.iter() {
         //#TODO(@derui) need to do remove here
         basenode
           .as_mut::<Expr>(self.sys)
@@ -1060,7 +1060,7 @@ impl<'a> CutModules<'a> {
               let mut need_change_parent = false;
               if parent_key != root_block_key {
                 need_change_parent = true;
-                if let std::collections::hash_map::Entry::Vacant(e) =
+                if let std::collections::hash_map::Entry::Vacant(_) =
                   block_remapping_map.entry(parent_key)
                 {
                   //#TODO(@derui) need to think about the case that the child is also a block
@@ -1136,7 +1136,7 @@ impl<'a> CutModules<'a> {
             let mut bind_expr_map: Vec<_> = container.sub_module_image.caller_expr.iter().collect();
             bind_expr_map.sort_by_key(|(key, _value)| *key);
             bind_expr_map.reverse();
-            for (k, node) in bind_expr_map {
+            for (_, node) in bind_expr_map {
               println!("erase_from_parent: {:?}", node);
               node.as_mut::<Expr>(self.sys).unwrap().erase_from_parent();
             }
