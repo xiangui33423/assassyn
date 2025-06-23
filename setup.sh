@@ -34,6 +34,17 @@ export PYTHONPATH=$REPO_PATH/python:$PYTHONPATH
 echo "Setting ASSASSYN_HOME to $REPO_PATH"
 export ASSASSYN_HOME=$REPO_PATH
 
+
+echo "Checking for PyCDE installation..."
+python -c "import pycde" &> /dev/null 
+if [ $? -eq 0 ]; then 
+  echo "PyCDE is found! Skip!"
+else
+  echo "Adding $REPO_PATH/3rd-party/circt/build/tools/circt/python_packages/pycde:$PYTHONPATH to PYTHONPATH."
+  export PYTHONPATH="$REPO_PATH/3rd-party/circt/build/tools/circt/python_packages/pycde:$PYTHONPATH"
+fi
+
+li
 if [ "$NO_VERILATOR" = false ]; then
 if [ -d $REPO_PATH/verilator ]; then
   echo "In-repo verilator found, setting VERILATOR_ROOT to $REPO_PATH/verilator"
