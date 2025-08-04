@@ -2,4 +2,4 @@
 
 from .module import Module, combinational, Port
 from .downstream import Downstream
-from .memory import SRAM
+from .sram import SRAM
