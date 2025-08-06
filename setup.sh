@@ -16,7 +16,7 @@ RESTORE_DIR=`pwd`
 cd `dirname $0`
 
 # Use the repository path to set the PYTHONPATH and ASSASSYN_HOME
-REPO_PATH=`git rev-parse --show-toplevel`
+REPO_PATH="/home/zhonga/0521/assassyn_" #`git rev-parse --show-toplevel`
 
 which sccache > /dev/null 2>&1
 
@@ -33,12 +33,15 @@ export PYTHONPATH=$REPO_PATH/python:$PYTHONPATH
 echo "Setting ASSASSYN_HOME to $REPO_PATH"
 export ASSASSYN_HOME=$REPO_PATH
 
-echo "Adding PyCDE to PYTHONPATH."
-export PYTHONPATH="$REPO_PATH/3rd-party/circt/build/tools/circt/python_packages/pycde:$PYTHONPATH"
+if [ -d "$REPO_PATH/3rd-party/circt/build/tools/circt/python_packages/pycde" ]; then
+  echo "Adding PyCDE to PYTHONPATH."
+  export PYTHONPATH="$REPO_PATH/3rd-party/circt/build/tools/circt/python_packages/pycde:$PYTHONPATH"
+fi
 
 if [ "$NO_VERILATOR" = false ]; then
   echo "In-repo verilator found, setting VERILATOR_ROOT to $REPO_PATH/verilator"
   export VERILATOR_ROOT=$REPO_PATH/3rd-party/verilator
+  export PATH=$VERILATOR_ROOT/bin:$PATH
 else
   echo "Verilator is disabled by --no-verilator flag"
 fi
