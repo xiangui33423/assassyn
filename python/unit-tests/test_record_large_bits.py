@@ -7,7 +7,7 @@ import assassyn
 entry = Record(
     symbol = Bits(1),
     a = Bits(32),
-    b = Bits(32)   
+    b = Bits(32)
 )
 
 class Driver(Module):
@@ -22,17 +22,18 @@ class Driver(Module):
         valid_global = Bits(1)(0)
 
         for i in range(15):
-            valid_temp = ~record[i].symbol
+            valid_temp = ~record[i][0].symbol
             valid_global = valid_global | valid_temp
             index = valid_temp.select(Bits(32)(i), index)
-        
         with Condition(valid_global):
-            record[index] = entry.bundle(
-                symbol = ~record[index].symbol, 
-                a = record[index].a,
-                b = index
-            ).value()
-            log("index {:05} ",index)
+            for i in range(15):
+                with Condition(index == Bits(32)(i)):
+                    (record[i] & self)[0] <= entry.bundle(
+                        symbol = ~record[i][0].symbol,
+                        a = record[i][0].a,
+                        b = index
+                    ).value()
+                    log("index {:05} ",index)
 
 def check_raw(raw):
     """
@@ -44,9 +45,11 @@ def check_raw(raw):
     lines = raw.split('\n')
     expected_indices = list(range(14, -1, -1))  # Expected indices: 14 to 0
     cycle = 1
+    log_lines = (line for line in lines if "index" in line)
     for i, expected_index in enumerate(expected_indices):
         try:
-            actual_index = int(lines[i].strip().split()[-1])
+            log_line = next(log_lines)
+            actual_index = int(log_line.strip().split()[-1])
         except (IndexError, ValueError):
             raise ValueError(f"Line {i} is invalid or does not contain an index: {lines[i]}")
 
@@ -57,7 +60,7 @@ def check_raw(raw):
 def test_record():
     sys = SysBuilder('record_large')
     with sys:
-        record = RegArray(entry,15,attr=[Array.FULLY_PARTITIONED])
+        record = [RegArray(entry,1) for _ in range(15)]
         driver = Driver()
         call = driver.build( record )
 

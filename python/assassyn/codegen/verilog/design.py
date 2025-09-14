@@ -3,10 +3,11 @@
 
 from typing import List, Dict, Tuple
 from string import Formatter
+from collections import defaultdict, deque
 
-from .utils import HEADER,dump_type, dump_type_cast
+from .utils import HEADER,dump_type, dump_type_cast,get_sram_info,extract_sram_params
 from ...analysis import expr_externally_used
-from ...ir.module import Module, Downstream, Port
+from ...ir.module import Module, Downstream, Port,SRAM
 from ...builder import SysBuilder
 from ...ir.visitor import Visitor
 from ...ir.block import Block, CondBlock,CycledBlock
@@ -14,6 +15,7 @@ from ...ir.const import Const
 from ...ir.array import Array
 from ...ir.dtype import Int, Bits, Record,RecordValue
 from ...utils import namify, unwrap_operand
+from ...analysis import get_upstreams
 from ...ir.expr import (
     Expr,
     BinaryOp,
@@ -35,7 +37,7 @@ from ...ir.expr import (
 )
 
 
-class CIRCTDumper(Visitor):  # pylint: disable=too-many-instance-attributes
+class CIRCTDumper(Visitor):  # pylint: disable=too-many-instance-attributes,too-many-statements
     """Dumps IR to CIRCT-compatible Verilog code."""
 
     wait_until: bool
@@ -50,7 +52,9 @@ class CIRCTDumper(Visitor):  # pylint: disable=too-many-instance-attributes
     async_callees: Dict[Module, List[Module]]
     downstream_dependencies: Dict[Module, List[Module]]
     is_top_generation: bool
-    finish_body:str
+    finish_body:list[str]
+    sram_payload_arrays:set
+    memory_defs:set
 
     def __init__(self):
         super().__init__()
@@ -68,7 +72,14 @@ class CIRCTDumper(Visitor):  # pylint: disable=too-many-instance-attributes
         self.downstream_dependencies = {}
         self.is_top_generation = False
         self.array_users = {}
-        self.finish_body = None
+        self.finish_body = []
+        self.finish_conditions = []
+        self.array_write_port_mapping = {}
+        self.sram_payload_arrays = set()
+        self.memory_defs = set()
+        self.expr_to_name = {}
+        self.name_counters = defaultdict(int)
+
 
     def get_pred(self) -> str:
         """Get the current predicate for conditional execution."""
@@ -78,14 +89,30 @@ class CIRCTDumper(Visitor):  # pylint: disable=too-many-instance-attributes
 
     def get_external_port_name(self, node: Expr) -> str:
         """Get the mangled port name for an external value."""
-        # This logic should mirror the port creation logic in visit_module.
-        port_name = namify(node.as_operand())
-        if port_name.startswith("_"):
-            port_name = f"port{port_name}"
+        producer_module = node.parent.module
+        producer_name = namify(producer_module.name)
+
+        # if node not in self.expr_to_name:
+        #     base_name = namify(node.as_operand())
+        #     if not base_name or base_name == '_':
+        #         base_name = 'tmp'
+        #     unique_name = f"{base_name}_{self.name_counters[base_name]}"
+        #     self.name_counters[base_name] += 1
+        #     self.expr_to_name[node] = unique_name
+
+        # base_port_name = namify(node.as_operand())
+        # if base_port_name.startswith("_"):
+        #     base_port_name = f"port{base_port_name}"
+        # port_name = f"{producer_name}_{base_port_name}"
+
+        base_port_name = namify(node.as_operand())
+        if base_port_name.startswith("_"):
+            base_port_name = f"port{base_port_name}"
+        port_name = f"{producer_name}_{base_port_name}"
         return port_name
 
 
-    def dump_rval(self,node, with_namespace: bool,module_name:str=None) -> str:  # pylint: disable=too-many-return-statements
+    def dump_rval(self,node, with_namespace: bool,module_name:str=None) -> str:  # pylint: disable=too-many-return-statements,too-many-branches
         """Dump a reference to a node with options."""
 
         node = unwrap_operand(node)
@@ -112,13 +139,26 @@ class CIRCTDumper(Visitor):  # pylint: disable=too-many-instance-attributes
             value = node
             return f'"{value}"'
         if isinstance(node, Expr):
-            raw = namify(node.as_operand())
+            if node not in self.expr_to_name:
+                base_name = namify(node.as_operand())
+                # Handle anonymous expressions which namify to '_' or an empty string.
+                if not base_name or base_name == '_':
+                    base_name = 'tmp'
+
+                count = self.name_counters[base_name]
+                unique_name = f"{base_name}_{count}" if count > 0 else base_name
+                self.name_counters[base_name] += 1
+                self.expr_to_name[node] = unique_name
+
+            unique_name = self.expr_to_name[node]
+
             if with_namespace:
                 owner_module_name = namify(node.parent.module.name)
                 if owner_module_name is None:
                     owner_module_name = module_name
-                return f"{owner_module_name}_{raw}"
-            return raw
+                return f"{owner_module_name}_{unique_name}"
+            return unique_name
+
         if isinstance(node, RecordValue):
             return self.dump_rval(node.value(), with_namespace, module_name)
 
@@ -206,6 +246,7 @@ class CIRCTDumper(Visitor):  # pylint: disable=too-many-instance-attributes
             a = self.dump_rval(expr.lhs, False)
             b = self.dump_rval(expr.rhs, False)
 
+
             if binop in [BinaryOp.SHL, BinaryOp.SHR] or 'SHR' in str(binop):
 
                 if lhs_type.bits != rhs_type.bits:
@@ -241,6 +282,15 @@ class CIRCTDumper(Visitor):  # pylint: disable=too-many-instance-attributes
                     f".as_bits({dtype.bits})[0:{dtype.bits}]"
                     f".{dump_type_cast(dtype)}"
                 )
+            elif expr.is_comparative():
+                # Convert to uint for comparison
+                if not expr.lhs.dtype.is_int():
+                    a= f"{a}.as_uint()"
+                if not expr.rhs.dtype.is_int():
+                    b = f"{b}.as_uint()"
+                op_str = BinaryOp.OPERATORS[expr.opcode]
+                op_body = f"(({a} {op_str} {b}).{dump_type_cast(dtype)})"
+                body = f'{rval} = {op_body}'
             else:
                 op_str = BinaryOp.OPERATORS[expr.opcode]
                 if expr.lhs.dtype != expr.rhs.dtype:
@@ -357,19 +407,29 @@ class CIRCTDumper(Visitor):  # pylint: disable=too-many-instance-attributes
 
         elif isinstance(expr, ArrayRead):
             array_ref = expr.array
-            array_idx = unwrap_operand(expr.idx)
-            array_idx = (self.dump_rval(array_idx, False)
-                         if not isinstance(array_idx, Const) else array_idx.value)
-
-            if dump_type(expr.idx.dtype)!=Bits and not isinstance(array_idx, int):
-                array_idx = f"{array_idx}.as_bits()"
-
-            array_name = self.dump_rval(array_ref, False)
-            if isinstance(expr.dtype, Record):
-                body = f'{rval} = self.{array_name}_q_in[{array_idx}]'
+            is_sram_payload = False
+            if isinstance(self.current_module, SRAM):
+                if array_ref == self.current_module.payload:
+                    is_sram_payload = True
+            if is_sram_payload:
+                rval = self.dump_rval(expr, False)
+                body = f'{rval} = self.mem_dataout'
+                self.expose('array', expr)
             else:
-                body = f'{rval} = self.{array_name}_q_in[{array_idx}].{dump_type_cast(expr.dtype)}'
-            self.expose('array', expr)
+                array_idx = unwrap_operand(expr.idx)
+                array_idx = (self.dump_rval(array_idx, False)
+                            if not isinstance(array_idx, Const) else array_idx.value)
+
+                if dump_type(expr.idx.dtype)!=Bits and not isinstance(array_idx, int):
+                    array_idx = f"{array_idx}.as_bits()"
+
+                array_name = self.dump_rval(array_ref, False)
+                if isinstance(expr.dtype, Record):
+                    body = f'{rval} = self.{array_name}_q_in[{array_idx}]'
+                else:
+                    body = \
+                    f'{rval} = self.{array_name}_q_in[{array_idx}].{dump_type_cast(expr.dtype)}'
+                self.expose('array', expr)
         elif isinstance(expr, ArrayWrite):
             self.expose('array', expr)
         elif isinstance(expr, FIFOPush):
@@ -451,26 +511,21 @@ class CIRCTDumper(Visitor):  # pylint: disable=too-many-instance-attributes
             if len(values) == 1:
                 body = f"{rval} = {values[0]}"
             else:
-                selector_body = expr.parent._body # pylint: disable=W0212
-                for expr_tmp in selector_body:
-                    if self.dump_rval(expr_tmp, False)==cond:
-                        b = self.dump_rval(expr_tmp.rhs, False)
-                        break
+                num_values = len(values)
+                selector_bits = max((num_values - 1).bit_length(), 1)
+                if num_values == 2:
+                    body = f"{cond}.as_bits()[1]"
+                else:
+                    self.append_code(f"{cond}_res = Bits({selector_bits})(0)")
+                    for i in range(num_values):
+                        self.append_code(
+                            f"{cond}_res = Mux({cond}[{i}] ,"
+                            f" {cond}_res , Bits({selector_bits})({i}))")
 
-                binary_selector_name = f"{rval}_selector"
-
-                selector_bits = (len(values) - 1).bit_length()
-
-                encoder_code = (
-                    f"{binary_selector_name} = "
-                    f"{b}.as_bits({selector_bits})"
-                )
-                self.append_code(encoder_code)
-                values_str = ", ".join(values)
-                mux_code = f"{rval} = Mux({binary_selector_name}, {values_str})"
-                self.append_code(mux_code)
-
-                body = None
+                    values_str = ", ".join(values)
+                    mux_code = f"{rval} = Mux({cond}_res, {values_str})"
+                    self.append_code(mux_code)
+                    body = None
 
         elif isinstance(expr, Intrinsic):
             intrinsic = expr.opcode
@@ -483,7 +538,7 @@ class CIRCTDumper(Visitor):  # pylint: disable=too-many-instance-attributes
     if ({{0}} & {{1}}) $finish;
 `endif
 """
-                self.finish_body = (f"sv.VerbatimOp({verilog_template!r}, "
+                self.finish_body.append(f"sv.VerbatimOp({verilog_template!r}, "
                         f"substitutions=[{predicate_signal}.value, executed_wire.value])")
                 body = None
             elif intrinsic == Intrinsic.ASSERT:
@@ -526,12 +581,67 @@ class CIRCTDumper(Visitor):  # pylint: disable=too-many-instance-attributes
             raise ValueError(f"Unhandled expression type: {type(expr).__name__}")
 
         if expr.is_valued() and expr_externally_used(expr, True):
-            self.expose('expr', expr)
+            if not isinstance(unwrap_operand(expr), Const):
+                self.expose('expr', expr)
 
         if body is not None:
             self.append_code(body)
 
-    def cleanup_post_generation(self):# pylint: disable=too-many-locals,too-many-branches,too-many-statements
+    # pylint: disable=too-many-locals,too-many-branches
+    def _generate_sram_control_signals(self, sram_info):
+        """Generate control signals for SRAM memory interface."""
+        array = sram_info['array']
+
+        array_writes = []
+        array_reads = []
+        write_addr = None
+        write_data = None
+        read_addr = None
+
+        for key, exposes in self._exposes.items():
+            if isinstance(key, Array) and key == array:
+                for expr, pred in exposes:
+                    if isinstance(expr, ArrayWrite):
+                        array_writes.append((expr, pred))
+                    elif isinstance(expr, ArrayRead):
+                        array_reads.append((expr, pred))
+
+        if array_writes:
+            write_expr, write_pred = array_writes[0]
+            write_addr = self.dump_rval(write_expr.idx, False)
+            write_enable = f'executed_wire & ({write_pred})'
+            write_data = self.dump_rval(write_expr.val, False)
+        else:
+            write_enable = 'Bits(1)(0)'
+            write_addr = None
+            write_data = dump_type(array.scalar_ty)(0)
+        read_addr = None
+        if array_reads:
+            read_expr, _ = array_reads[0]
+            read_addr = self.dump_rval(read_expr.idx, False)
+
+        self.append_code(f'self.mem_write_enable = {write_enable}')
+
+        # Address selection (prioritize write address when writing)
+        if write_addr and read_addr:
+            if write_addr != read_addr:
+                self.append_code(f'self.mem_address = Mux({write_enable},'
+                    f' {read_addr}.as_bits(), {write_addr}.as_bits())')
+            else:
+                self.append_code(f'self.mem_address = {write_addr}.as_bits()')
+        elif write_addr:
+            self.append_code(f'self.mem_address = {write_addr}.as_bits()')
+        elif read_addr:
+            self.append_code(f'self.mem_address = {read_addr}.as_bits()')
+        else:
+            self.append_code(f'self.mem_address = Bits({array.index_bits})(0)')
+
+
+        self.append_code(f'self.mem_write_data = {write_data}')
+
+        self.append_code('self.mem_read_enable = Bits(1)(1)')  # Always enable reads
+
+    def cleanup_post_generation(self):# pylint: disable=too-many-locals,too-many-branches,too-many-statements,too-many-nested-blocks
         """genearting signals for connecting modules"""
         self.append_code('')
 
@@ -558,37 +668,67 @@ class CIRCTDumper(Visitor):  # pylint: disable=too-many-instance-attributes
                 self.append_code(f"executed_wire = {' & '.join(exec_conditions)}")
 
         if self.finish_body:
-            self.append_code(self.finish_body)
+            for finish in self.finish_body:
+                self.append_code(finish)
 
+        if isinstance(self.current_module,SRAM):
+            sram_info = get_sram_info(self.current_module)
+            if sram_info:
+                self._generate_sram_control_signals(sram_info)
+        #pylint: disable=too-many-nested-blocks
         for key, exposes in self._exposes.items():
             if isinstance(key, Array):
-                writes = [(e, p) for e, p in exposes if isinstance(e, ArrayWrite)]
-                if not writes:
+                if key in self.sram_payload_arrays:
                     continue
-                array_name = self.dump_rval(key, False)
-                array_dtype = key.scalar_ty
-
-                ce_terms = [p for _, p in writes]
-                self.append_code(f'self.{array_name}_w = executed_wire & ({" | ".join(ce_terms)})')
-
-                write_0 = f'{self.dump_rval(writes[0][0].val, False)}'
-                if writes[0][0].val.dtype != dump_type(array_dtype):
-                    write_0 = f"{write_0}.{dump_type_cast(array_dtype)}"
-                wdata_mux = f"Mux({writes[0][1]}, {dump_type(array_dtype)}(0),{write_0} )"
-                for expr, pred in writes[1:]:
-                    write_0 = f'{self.dump_rval(expr.val, False)}'
-                    if expr.val.dtype != dump_type(array_dtype):
-                        write_0 = f"{write_0}.{dump_type_cast(array_dtype)}"
-                    wdata_mux = f"Mux({pred}, {wdata_mux},{write_0})"
-                self.append_code(f'self.{array_name}_wdata = {wdata_mux}')
-
-                widx_mux = (
-                    f"Mux({writes[0][1]}, {dump_type(writes[0][0].idx.dtype)}(0),"
-                    f" {self.dump_rval(writes[0][0].idx, False)})"
-                )
-                for expr, pred in writes[1:]:
-                    widx_mux = f"Mux({pred},  {widx_mux},{self.dump_rval(expr.idx, False)})"
-                self.append_code(f'self.{array_name}_widx = {widx_mux}')
+                array_writes = [
+                        (e, p) for e, p in exposes
+                        if isinstance(e, ArrayWrite)
+                    ]
+                arr = key
+                array_name = self.dump_rval(arr, False)
+                array_dtype = arr.scalar_ty
+                port_mapping = self.array_write_port_mapping.get(arr, {})
+                # Group writes by their source module
+                writes_by_module = {}
+                for expr, pred in array_writes:
+                    module = expr.module
+                    if module not in writes_by_module:
+                        writes_by_module[module] = []
+                    writes_by_module[module].append((expr, pred))
+                # Generate signals for each port
+                for module, module_writes in writes_by_module.items():
+                    port_idx = port_mapping[module]
+                    port_suffix = f"_port{port_idx}"
+                    # Write enable
+                    ce_terms = [p for _, p in module_writes]
+                    self.append_code(
+                        f'self.{array_name}_w{port_suffix} = '
+                        f'executed_wire & ({" | ".join(ce_terms)})'
+                    )
+                    # Write data (mux if multiple writes from same module)
+                    if len(module_writes) == 1:
+                        wdata = self.dump_rval(module_writes[0][0].val, False)
+                        if module_writes[0][0].val.dtype != dump_type(array_dtype):
+                            wdata = f"{wdata}.{dump_type_cast(array_dtype)}"
+                    else:
+                        # Build mux chain
+                        wdata = self._build_mux_chain(module_writes, array_dtype)
+                    self.append_code(f'self.{array_name}_wdata{port_suffix} = {wdata}')
+                    if len(module_writes) == 1:
+                        # Single write - no mux needed, just use the index directly
+                        widx_mux = self.dump_rval(module_writes[0][0].idx, False)
+                    else:
+                        # Multiple writes - build mux chain
+                        widx_mux = (
+                            f"Mux({module_writes[0][1]},"
+                            f" {dump_type(module_writes[0][0].idx.dtype)}(0),"
+                            f" {self.dump_rval(module_writes[0][0].idx, False)})"
+                        )
+                        for expr, pred in module_writes[1:]:
+                            widx_mux = f"Mux({pred},  {widx_mux},{self.dump_rval(expr.idx, False)})"
+                    self.append_code(
+                        f'self.{array_name}_widx{port_suffix} = {widx_mux}.as_bits()'
+                        )
 
             elif isinstance(key, Port):
                 has_push = any(isinstance(e, FIFOPush) for e, p in exposes)
@@ -597,7 +737,6 @@ class CIRCTDumper(Visitor):  # pylint: disable=too-many-instance-attributes
                 if has_push:
                     fifo = self.dump_rval(key, False)
                     pushes = [(e, p) for e, p in exposes if isinstance(e, FIFOPush)]
-
                     final_push_predicate = " | ".join([f"({p})" for _, p in pushes]) \
                     if pushes else "Bits(1)(0)"
 
@@ -660,12 +799,22 @@ class CIRCTDumper(Visitor):  # pylint: disable=too-many-instance-attributes
 
             else:
                 expr, pred = exposes[0]
+                if isinstance(unwrap_operand(expr), Const):
+                    continue
                 rval = self.dump_rval(expr, False)
                 exposed_name = self.dump_rval(expr, True)
                 if not isinstance(key,ArrayWrite ):
                     dtype_str = dump_type(expr.dtype)
                 else :
                     dtype_str = dump_type(expr.x.dtype)
+
+                if isinstance(expr, Slice):
+                    # For slice expressions, calculate actual width
+                    l = expr.l.value.value if hasattr(expr.l, 'value') else expr.l
+                    r = expr.r.value.value if hasattr(expr.r, 'value') else expr.r
+                    actual_bits = r - l + 1
+                    dtype_str = f"Bits({actual_bits})"
+
 
                 # Add port declaration strings to our list
                 self.exposed_ports_to_add.append(f'expose_{exposed_name} = Output({dtype_str})')
@@ -690,7 +839,7 @@ class CIRCTDumper(Visitor):  # pylint: disable=too-many-instance-attributes
         self.cond_stack = []
         self.current_module = node
         self.exposed_ports_to_add = []
-        self.finish_body = None
+        self.finish_body = []
 
         self.visit_block(node.body)
         self.cleanup_post_generation()
@@ -703,6 +852,7 @@ class CIRCTDumper(Visitor):  # pylint: disable=too-many-instance-attributes
         self.current_module = node
 
         is_downstream = isinstance(node, Downstream)
+        is_sram = isinstance(node, SRAM)
         is_driver = node not in self.async_callees
 
         self.append_code(f'class {namify(node.name)}(Module):')
@@ -718,12 +868,22 @@ class CIRCTDumper(Visitor):  # pylint: disable=too-many-instance-attributes
                 for dep_mod in self.downstream_dependencies[node]:
                     self.append_code(f'{namify(dep_mod.name)}_executed = Input(Bits(1))')
             for ext_val in node.externals:
-                port_name = namify(ext_val.as_operand())
-                if port_name.startswith("_"):
-                    port_name = f"port{port_name}"
+                if isinstance(ext_val,Bind) or isinstance(unwrap_operand(ext_val), Const):
+                    continue
+                port_name = self.get_external_port_name(ext_val)
                 port_type = dump_type(ext_val.dtype)
                 self.append_code(f'{port_name} = Input({port_type})')
                 self.append_code(f'{port_name}_valid = Input(Bits(1))')
+            if is_sram:
+                sram_info = get_sram_info(node)
+                if sram_info:
+                    sram_array = sram_info['array']
+                    self.append_code(f'mem_dataout = Input({dump_type(sram_array.scalar_ty)})')
+                    index_bits = sram_array.index_bits if sram_array.index_bits > 0 else 1
+                    self.append_code(f'mem_address = Output(Bits({index_bits}))')
+                    self.append_code(f'mem_write_data = Output({dump_type(sram_array.scalar_ty)})')
+                    self.append_code('mem_write_enable = Output(Bits(1))')
+                    self.append_code('mem_read_enable = Output(Bits(1))')
 
         elif is_driver or node in self.async_callees:
             self.append_code('trigger_counter_pop_valid = Input(Bits(1))')
@@ -759,27 +919,34 @@ class CIRCTDumper(Visitor):  # pylint: disable=too-many-instance-attributes
             self.append_code(f'{port_prefix}_push_data = Output({dump_type(dtype)})')
         for callee in unique_call_handshake_targets:
             self.append_code(f'{namify(callee.name)}_trigger = Output(UInt(8))')
-
+        # pylint: disable=too-many-nested-blocks
         for arr_container in self.sys.arrays:
-            for arr in arr_container.partition:
-                if node in self.array_users.get(arr, []):
-                    self.append_code(
-                        f"{namify(arr.name)}_q_in = "
-                        f"Input(dim({dump_type(arr.scalar_ty)}, {arr.size}))"
-                    )
-                    if any(isinstance(e, ArrayWrite) and e.array == arr \
-                            for e in self._walk_expressions(node.body)):
-
-                        self.append_code(f'{namify(arr.name)}_w = Output(Bits(1))')
+            arr = arr_container
+            if is_sram:
+                sram_info = get_sram_info(node)
+                if sram_info and arr == sram_info['array']:
+                    continue
+            if node in self.array_users.get(arr, []):
+                self.append_code(
+                    f"{namify(arr.name)}_q_in = "
+                    f"Input(dim({dump_type(arr.scalar_ty)}, {arr.size}))"
+                )
+                port_mapping = self.array_write_port_mapping.get(arr, {})
+                for module_key, port_idx in port_mapping.items():
+                    if module_key == node:
+                        port_suffix = f"_port{port_idx}"
+                        self.append_code( \
+                            f'{namify(arr.name)}_w{port_suffix} = Output(Bits(1))')
                         self.append_code(
-                            f'{namify(arr.name)}_wdata = Output({dump_type(arr.scalar_ty)})'
-                            )
-
-                        idx_type = next(e.idx.dtype for e in self._walk_expressions(node.body) \
-                                        if isinstance(e, ArrayWrite) and e.array == arr)
-                        self.append_code(
-                            f'{namify(arr.name)}_widx = Output({dump_type(idx_type)})'
+                            f'{namify(arr.name)}_wdata{port_suffix} ='
+                            f' Output({dump_type(arr.scalar_ty)})'
                         )
+                        idx_type = arr.index_bits if arr.index_bits > 0 else 1
+                        self.append_code(
+                            f'{namify(arr.name)}_widx{port_suffix} ='
+                            f' Output(Bits({idx_type}))'
+                        )
+
 
         for port_code in self.exposed_ports_to_add:
             self.append_code(port_code)
@@ -788,8 +955,14 @@ class CIRCTDumper(Visitor):  # pylint: disable=too-many-instance-attributes
         self.append_code('@generator')
         self.append_code('def construct(self):')
 
-        self.code.extend(construct_method_body)
-
+        if is_sram:
+            self.indent += 4
+            self.append_code('# SRAM dataout from memory')
+            self.append_code('dataout = self.mem_dataout')
+            self.code.extend(construct_method_body)
+            self.indent -= 4
+        else:
+            self.code.extend(construct_method_body)
         self.indent -= 4
         self.append_code('')
 
@@ -801,13 +974,43 @@ class CIRCTDumper(Visitor):  # pylint: disable=too-many-instance-attributes
             elif isinstance(item, Block):
                 yield from self._walk_expressions(item)
 
+    def _build_mux_chain(self, writes, dtype):
+        """Helper to build a mux chain for write data"""
+        first_val = self.dump_rval(writes[0][0].val, False)
+        if writes[0][0].val.dtype != dump_type(dtype):
+            first_val = f"{first_val}.{dump_type_cast(dtype)}"
+        mux = f"Mux({writes[0][1]}, {dump_type(dtype)}(0), {first_val})"
+
+        for expr, pred in writes[1:]:
+            val = self.dump_rval(expr.val, False)
+            if expr.val.dtype != dump_type(dtype):
+                val = f"{val}.{dump_type_cast(dtype)}"
+            mux = f"Mux({pred}, {mux}, {val})"
+
+        return mux
+
     def visit_system(self, node: SysBuilder):# pylint: disable=too-many-locals,R0912
         sys = node
         self.sys = sys
+        for module in sys.downstreams:
+            if isinstance(module, SRAM) and hasattr(module, 'payload'):
+                self.sram_payload_arrays.add(module.payload)
 
         for arr_container in sys.arrays:
-            for arr in arr_container.partition:
-                self.visit_array(arr)
+            if arr_container in self.sram_payload_arrays:
+                continue
+            sub_array = arr_container
+            if sub_array not in self.array_write_port_mapping:
+                self.array_write_port_mapping[sub_array] = {}
+            sub_array_writers = sub_array.get_write_ports()
+            for module, _ in sub_array_writers.items():
+                if module not in self.array_write_port_mapping[sub_array]:
+                    port_idx = len(self.array_write_port_mapping[sub_array])
+                    self.array_write_port_mapping[sub_array][module] = port_idx
+
+        for arr_container in sys.arrays:
+            if arr_container not in self.sram_payload_arrays:
+                self.visit_array(arr_container)
 
         expr_to_module = {}
         for module in sys.modules + sys.downstreams:
@@ -816,19 +1019,10 @@ class CIRCTDumper(Visitor):  # pylint: disable=too-many-instance-attributes
                     expr_to_module[expr] = module
 
         for ds_module in sys.downstreams:
-            self.downstream_dependencies[ds_module] = []
-            deps = set()
-            for expr in self._walk_expressions(ds_module.body):
-                # An operand is a dependency if it's an Expr defined in another module.
-                for operand in expr.operands:
-                    op = unwrap_operand(operand)
-                    if isinstance(op, Expr) and op in expr_to_module:
-                        producer_module = expr_to_module[op]
-                        if producer_module != ds_module:
-                            deps.add(producer_module)
-            self.downstream_dependencies[ds_module] = list(deps)
+            self.downstream_dependencies[ds_module] = get_upstreams(ds_module)
 
-        for module in sys.modules:
+        all_modules = self.sys.modules + self.sys.downstreams
+        for module in all_modules:
             for expr in self._walk_expressions(module.body):
                 if isinstance(expr, AsyncCall):
                     callee = expr.bind.callee
@@ -840,13 +1034,17 @@ class CIRCTDumper(Visitor):  # pylint: disable=too-many-instance-attributes
 
         self.array_users = {}
         for arr_container in self.sys.arrays:# pylint: disable=R1702
-            for arr in arr_container.partition:
-                self.array_users[arr] = []
-                for mod in self.sys.modules + self.sys.downstreams:
-                    for expr in self._walk_expressions(mod.body):
-                        if isinstance(expr, (ArrayRead, ArrayWrite)) and expr.array == arr:
-                            if mod not in self.array_users[arr]:
-                                self.array_users[arr].append(mod)
+            if arr_container in self.sram_payload_arrays:
+                continue
+            arr = arr_container
+            self.array_users[arr] = []
+            for mod in self.sys.modules + self.sys.downstreams:
+                if isinstance(mod, SRAM) and hasattr(mod, 'payload') and arr == mod.payload:
+                    continue
+                for expr in self._walk_expressions(mod.body):
+                    if isinstance(expr, (ArrayRead, ArrayWrite)) and expr.array == arr:
+                        if mod not in self.array_users[arr]:
+                            self.array_users[arr].append(mod)
 
         for elem in sys.modules:
             self.current_module = elem
@@ -858,7 +1056,7 @@ class CIRCTDumper(Visitor):  # pylint: disable=too-many-instance-attributes
         self._generate_top_harness()
         self.is_top_generation = False
 
-
+    # pylint:disable = too-many-statements
     def visit_array(self, node: Array):
         """Generates a PyCDE Module to encapsulate an array and its write logic."""
         array = node
@@ -866,24 +1064,30 @@ class CIRCTDumper(Visitor):  # pylint: disable=too-many-instance-attributes
         dtype = array.scalar_ty
         index_bits = array.index_bits if array.index_bits > 0 else 1
 
-        dim_type = f"dim({dump_type(dtype)} , {size})"
+        writers = list(array.get_write_ports().keys())
+        num_write_ports = len(writers)
 
+        dim_type = f"dim({dump_type(dtype)}, {size})"
         class_name = namify(array.name)
+
         self.append_code(f'class {class_name}(Module):')
         self.indent += 4
         self.append_code('clk = Clock()')
         self.append_code('rst = Reset()')
         self.append_code('')
-        self.append_code('w_ins = Input(Bits(1))')
-        self.append_code(f'widx_ins = Input(Bits({index_bits}))')
-        self.append_code(f'wdata_ins = Input({dump_type(dtype)})')
-        self.append_code('')
+
+        for i in range(num_write_ports):
+            port_suffix = f"_port{i}"
+            self.append_code(f'w{port_suffix} = Input(Bits(1))')
+            self.append_code(f'widx{port_suffix} = Input(Bits({index_bits}))')
+            self.append_code(f'wdata{port_suffix} = Input({dump_type(dtype)})')
+            self.append_code('')
+
         self.append_code(f'q_out = Output({dim_type})')
         self.append_code('')
         self.append_code('@generator')
         self.append_code('def construct(self):')
         self.indent += 4
-
         initializer = array.initializer
         if initializer is not None:
             rst_value_str = str(initializer)
@@ -893,21 +1097,40 @@ class CIRCTDumper(Visitor):  # pylint: disable=too-many-instance-attributes
         self.append_code(
             f'data_reg = Reg({dim_type}, '
             f'clk=self.clk, rst=self.rst, rst_value={rst_value_str})'
-            )
-        self.append_code('')
-
-        self.append_code(
-            f"next_data_values = "
-            f"[ Mux(self.widx_ins == Bits({index_bits})(i), data_reg[i],self.wdata_ins)"
-            f" for i in range({size}) ]"
         )
-        self.append_code(f'next_data_values =  {dim_type}(next_data_values)')
-        self.append_code('next_data = Mux(self.w_ins,data_reg,next_data_values)')
+        self.append_code('')
+        if num_write_ports != 0:
+            self.append_code('# Multi-port write logic')
+            self.append_code('next_data_values = []')
+            self.append_code(f'for i in range({size}):')
+            self.indent += 4
+            self.append_code('# Check each write port for this address')
+            self.append_code('element_value = data_reg[i]')
+            for port_idx in reversed(range(num_write_ports)):
+                port_suffix = f"_port{port_idx}"
+                self.append_code(
+                    f'# Port {port_idx} write check'
+                )
+                self.append_code(
+                    f'if_write_port{port_idx} = '
+                    f'(self.w{port_suffix} & '
+                    f'(self.widx{port_suffix} == Bits({index_bits})(i)))'
+                )
+                self.append_code(
+                    f'element_value = Mux(if_write_port{port_idx}, '
+                    f'element_value, self.wdata{port_suffix})'
+                )
+            self.append_code('next_data_values.append(element_value)')
+            self.indent -= 4
+            self.append_code(f'next_data = {dim_type}(next_data_values)')
+        else:
+            self.append_code('next_data = data_reg')
         self.append_code('data_reg.assign(next_data)')
         self.append_code('self.q_out = data_reg')
 
         self.indent -= 8
         self.append_code('')
+
 
     def _generate_top_harness(self):# pylint: disable=too-many-locals,too-many-branches,too-many-statements
         """
@@ -925,6 +1148,32 @@ class CIRCTDumper(Visitor):  # pylint: disable=too-many-instance-attributes
         self.append_code('def construct(self):')
         self.indent += 4
 
+        sram_modules = [m for m in self.sys.downstreams if isinstance(m,SRAM)]
+        if sram_modules:
+            self.append_code('\n# --- SRAM Memory Blackbox Instances ---')
+            for data_width, addr_width, array_name in self.memory_defs:
+                self.append_code(f'mem_{array_name}_dataout = Wire(Bits({data_width}))')
+                self.append_code(f'mem_{array_name}_address = Wire(Bits({addr_width}))')
+                self.append_code(f'mem_{array_name}_write_data = Wire(Bits({data_width}))')
+                self.append_code(f'mem_{array_name}_write_enable = Wire(Bits(1))')
+                self.append_code(f'mem_{array_name}_read_enable = Wire(Bits(1))')
+
+                # Instantiate memory blackbox (as external Verilog module)
+                self.append_code('# Instantiate memory blackbox module')
+                self.append_code(
+                    f'mem_{array_name}_inst = sramBlackbox_{array_name}()'
+                    '(clk=self.clk, rst_n=~self.rst, '
+                    f'address=mem_{array_name}_address, '
+                    f'wd=mem_{array_name}_write_data, '
+                    'banksel=Bits(1)(1), '
+                    f'read=mem_{array_name}_read_enable, '
+                    f'write=mem_{array_name}_write_enable)'
+                )
+
+                # Now mem_{array_name}_dataout is properly driven by the module output
+                self.append_code(f'mem_{array_name}_dataout.assign(mem_{array_name}_inst.dataout)')
+                self.append_code('')
+
         self.append_code('\n# --- Global Cycle Counter ---')
         self.append_code('# A free-running counter for testbench control')
 
@@ -933,6 +1182,7 @@ class CIRCTDumper(Visitor):  # pylint: disable=too-many-instance-attributes
             'cycle_count.assign( (cycle_count + UInt(64)(1)).as_bits()[0:64].as_uint() )'
             )
         self.append_code('self.global_cycle_count = cycle_count')
+
         # --- 1. Wire Declarations (Generic) ---
         self.append_code('# --- Wires for FIFOs, Triggers, and Arrays ---')
         for module in self.sys.modules:
@@ -956,21 +1206,38 @@ class CIRCTDumper(Visitor):  # pylint: disable=too-many-instance-attributes
             self.append_code(f'{tc_base_name}_pop_ready = Wire(Bits(1))')
 
         for arr_container in self.sys.arrays:
-            for arr in arr_container.partition:
-                arr_name = namify(arr.name)
-                index_bits = arr.index_bits if arr.index_bits > 0 else 1
-                self.append_code(f'# Wires for {arr_name}')
-                self.append_code(f'aw_{arr_name}_w_ins = Wire(Bits(1))')
-                self.append_code(f'aw_{arr_name}_wdata_ins = Wire({dump_type(arr.scalar_ty)})')
-                self.append_code(f'aw_{arr_name}_widx_ins = Wire(Bits({index_bits}))')
-
-                self.append_code(f'array_writer_{arr_name} = {arr_name}(')
-                self.append_code('    clk=self.clk, rst=self.rst,')
+            arr = arr_container
+            is_sram_array = any(isinstance(m, SRAM) and \
+                                m.payload == arr for m in self.sys.downstreams)
+            if is_sram_array:
+                continue
+            arr_name = namify(arr.name)
+            index_bits = arr.index_bits if arr.index_bits > 0 else 1
+            port_mapping = self.array_write_port_mapping.get(arr, {})
+            num_ports = len(port_mapping)
+            self.append_code(f'# Multi-port array {arr_name} with {num_ports} write ports')
+            # Declare wires for each port
+            for port_idx in range(num_ports):
+                port_suffix = f"_port{port_idx}"
+                self.append_code(f'aw_{arr_name}_w{port_suffix} = Wire(Bits(1))')
                 self.append_code(
-                    f'    w_ins=aw_{arr_name}_w_ins,'
-                    f' wdata_ins=aw_{arr_name}_wdata_ins, widx_ins=aw_{arr_name}_widx_ins)'
+                    f'aw_{arr_name}_wdata{port_suffix} = Wire({dump_type(arr.scalar_ty)})'
                 )
-                self.append_code('')
+                self.append_code(
+                    f'aw_{arr_name}_widx{port_suffix} = Wire(Bits({index_bits}))'
+                )
+            # Instantiate multi-port array
+            port_connections = ['clk=self.clk', 'rst=self.rst']
+            for port_idx in range(num_ports):
+                port_suffix = f"_port{port_idx}"
+                port_connections.extend([
+                    f'w{port_suffix}=aw_{arr_name}_w{port_suffix}',
+                    f'wdata{port_suffix}=aw_{arr_name}_wdata{port_suffix}',
+                    f'widx{port_suffix}=aw_{arr_name}_widx{port_suffix}'
+                ])
+            self.append_code(
+                f'array_writer_{arr_name} = {arr_name}({", ".join(port_connections)})'
+            )
 
         # --- 2. Hardware Instantiations (Generic) ---
         self.append_code('\n# --- Hardware Instantiations ---')
@@ -1009,39 +1276,118 @@ class CIRCTDumper(Visitor):  # pylint: disable=too-many-instance-attributes
             self.append_code(f'{tc_base_name}_pop_valid.assign({tc_base_name}_inst.pop_valid)')
 
         all_driven_fifo_ports = set()
+
         self.append_code('\n# --- Module Instantiations and Connections ---')
-        for module in self.sys.modules + self.sys.downstreams:
+
+        module_deps = defaultdict(set)
+        all_modules = self.sys.modules + self.sys.downstreams
+
+        # Track which modules produce which expressions
+        expr_producers = {}
+        for module in all_modules:
+            for expr in self._walk_expressions(module.body):
+                if expr.is_valued():
+                    expr_producers[expr] = module
+
+        # Build dependencies for all modules
+        for module in all_modules:
+            # Dependencies from downstream_dependencies
+            if module in self.downstream_dependencies:
+                for dep in self.downstream_dependencies[module]:
+                    module_deps[module].add(dep)
+
+            # Dependencies from external values
+            for ext_val in getattr(module, 'externals', {}).keys():
+                if isinstance(ext_val, Expr) and ext_val in expr_producers:
+                    producer = expr_producers[ext_val]
+                    if producer != module:
+                        module_deps[module].add(producer)
+                elif isinstance(ext_val, Bind):
+                    continue
+
+        # Topological sort with proper dependency order
+        def topological_sort(modules, deps):
+            # Calculate in-degree (number of modules that depend on this module)
+            dependents = defaultdict(set)
+            for module, dependencies in deps.items():
+                for dep in dependencies:
+                    dependents[dep].add(module)
+
+            in_degree = {m: len(deps.get(m, set())) for m in modules}
+
+            # Start with modules that have no dependencies
+            queue = deque([m for m in modules if in_degree[m] == 0])
+            sorted_modules = []
+
+            while queue:
+                module = queue.popleft()
+                sorted_modules.append(module)
+
+                # For each module that depends on this one
+                for dependent in dependents[module]:
+                    in_degree[dependent] -= 1
+                    if in_degree[dependent] == 0:
+                        queue.append(dependent)
+
+            # Handle any cycles by adding remaining modules
+            for m in modules:
+                if m not in sorted_modules:
+                    sorted_modules.append(m)
+
+            return sorted_modules
+
+        # Sort modules by dependencies
+        sorted_modules = topological_sort(all_modules, module_deps)
+
+        for module in sorted_modules:
             mod_name = namify(module.name)
-            self.append_code(f'# Instantiation for {module.name}')
-
-            port_map = ['clk=self.clk', 'rst=self.rst','cycle_count=cycle_count']
-
             is_downstream = isinstance(module, Downstream)
+            is_sram = isinstance(module, SRAM)
+
+            self.append_code(f'# Instantiation for {module.name}')
+            port_map = ['clk=self.clk', 'rst=self.rst', 'cycle_count=cycle_count']
 
             if not is_downstream:
                 port_map.append(f"trigger_counter_pop_valid={mod_name}_trigger_counter_pop_valid")
+                for port in module.ports:
+                    fifo_base_name = f'fifo_{mod_name}_{namify(port.name)}'
+                    if isinstance(port.dtype, Record):
+                        port_map.append(f"{namify(port.name)}={fifo_base_name}_pop_data")
+                    else:
+                        port_map.append(
+                            f"{namify(port.name)}="
+                            f"{fifo_base_name}_pop_data.{dump_type_cast(port.dtype)}"
+                        )
+                    port_map.append(f"{namify(port.name)}_valid={fifo_base_name}_pop_valid")
+
             else:
                 if module in self.downstream_dependencies:
                     for dep_mod in self.downstream_dependencies[module]:
                         dep_name = namify(dep_mod.name)
                         port_map.append(f"{dep_name}_executed=inst_{dep_name}.executed")
+
                 for ext_val in module.externals:
+                    if isinstance(ext_val, Bind) or isinstance(unwrap_operand(ext_val), Const):
+                        continue
                     producer_module = ext_val.parent.module
-                    port_name = namify(ext_val.as_operand())
-                    if port_name.startswith("_"):
-                        port_name = f"port{port_name}"
+                    producer_name = namify(producer_module.name)
+                    port_name = self.get_external_port_name(ext_val)
                     exposed_name = self.dump_rval(ext_val, True)
 
                     data_conn = \
-                        f"{port_name}=inst_{namify(producer_module.name)}.expose_{exposed_name}"
+                        f"{port_name}=inst_{producer_name}.expose_{exposed_name}"
                     valid_conn = (
                         f"{port_name}_valid="
-                        f"inst_{namify(producer_module.name)}.valid_{exposed_name}"
+                        f"inst_{producer_name}.valid_{exposed_name}"
                     )
 
                     port_map.append(data_conn)
                     port_map.append(valid_conn)
-
+                if is_sram:
+                    sram_info = get_sram_info(module)
+                    array = sram_info['array']
+                    array_name = namify(array.name)
+                    port_map.append(f'mem_dataout=mem_{array_name}_dataout')
 
             for arr, users in self.array_users.items():
                 if module in users:
@@ -1070,19 +1416,22 @@ class CIRCTDumper(Visitor):  # pylint: disable=too-many-instance-attributes
                     f"{namify(callee_mod.name)}_trigger_counter_delta_ready"
                 )
 
-            if not is_downstream:
-                for port in module.ports:
-                    fifo_base_name = f'fifo_{mod_name}_{namify(port.name)}'
-                    if isinstance(port.dtype, Record):
-                        port_map.append(f"{namify(port.name)}={fifo_base_name}_pop_data")
-                    else:
-                        port_map.append(
-                            f"{namify(port.name)}="
-                            f"{fifo_base_name}_pop_data.{dump_type_cast(port.dtype)}"
-                        )
-                    port_map.append(f"{namify(port.name)}_valid={fifo_base_name}_pop_valid")
-
             self.append_code(f"inst_{mod_name} = {mod_name}({', '.join(port_map)})")
+
+            if is_sram:
+                sram_info = get_sram_info(module)
+                array = sram_info['array']
+                array_name = namify(array.name)
+                self.append_code(f'mem_{array_name}_address.assign(inst_{mod_name}.mem_address)')
+                self.append_code(
+                    f'mem_{array_name}_write_data.assign(inst_{mod_name}.mem_write_data)'
+                    )
+                self.append_code(
+                    f'mem_{array_name}_write_enable.assign(inst_{mod_name}.mem_write_enable)'
+                    )
+                self.append_code(
+                    f'mem_{array_name}_read_enable.assign(inst_{mod_name}.mem_read_enable)'
+                    )
 
             if not is_downstream:
                 self.append_code(
@@ -1095,6 +1444,7 @@ class CIRCTDumper(Visitor):  # pylint: disable=too-many-instance-attributes
                             f"fifo_{mod_name}_{namify(port.name)}_pop_ready"
                             f".assign(inst_{mod_name}.{namify(port.name)}_pop_ready)"
                             )
+
             for (callee_mod, callee_port) in unique_push_targets:
                 callee_mod_name = namify(callee_mod.name)
                 callee_port_name = namify(callee_port.name)
@@ -1120,67 +1470,8 @@ class CIRCTDumper(Visitor):  # pylint: disable=too-many-instance-attributes
                         )
         self.append_code('\n# --- Array Write-Back Connections ---')
         for arr_container in self.sys.arrays:
-            for arr in arr_container.partition:
-                arr_name = namify(arr.name)
-                users = self.array_users.get(arr, [])
-                writers = [m for m in users \
-                           if any(isinstance(e, ArrayWrite) and e.array == arr \
-                                            for e in self._walk_expressions(m.body))]
-
-                if len(writers) == 1:
-                    # Single writer: direct connection
-                    writer_mod_name = namify(writers[0].name)
-                    self.append_code(
-                        f"aw_{arr_name}_w_ins.assign(inst_{writer_mod_name}.{arr_name}_w)"
-                        )
-                    self.append_code(
-                        f"aw_{arr_name}_wdata_ins.assign(inst_{writer_mod_name}.{arr_name}_wdata)"
-                        )
-                    if arr.index_bits > 0:
-                        self.append_code(
-                            f"aw_{arr_name}_widx_ins"
-                            f".assign(inst_{writer_mod_name}.{arr_name}_widx"
-                            f".as_bits({arr.index_bits}))"
-                            )
-                    else:
-                        self.append_code(f"aw_{arr_name}_widx_ins.assign(Bits(1)(0))")
-
-                elif len(writers) > 1:
-                    # Multiple writers: arbitration logic
-                    self.append_code(f'# Arbitrating multiple writers for array {arr_name}')
-                    w_terms = [f"inst_{namify(w.name)}.{arr_name}_w" for w in writers]
-                    self.append_code(f"aw_{arr_name}_w_ins.assign({' | '.join(w_terms)})")
-
-                    # WData Mux
-                    wdata_mux = f"{dump_type(arr.scalar_ty)}(0)"
-                    for writer in reversed(writers):
-                        w_mod_name = namify(writer.name)
-                        cond = f"inst_{w_mod_name}.{arr_name}_w"
-                        true_val = f"inst_{w_mod_name}.{arr_name}_wdata"
-                        wdata_mux = f"Mux({cond}, {wdata_mux}, {true_val})"
-                    self.append_code(f"aw_{arr_name}_wdata_ins.assign({wdata_mux})")
-                    # WIdx Mux
-                    if arr.index_bits > 0:
-                        widx_mux = f"Bits({arr.index_bits})(0)"
-                        for writer in reversed(writers):
-                            w_mod_name = namify(writer.name)
-                            cond = f"inst_{w_mod_name}.{arr_name}_w"
-                            true_val = f"inst_{w_mod_name}.{arr_name}_widx"
-                            widx_mux = f"Mux({cond}, {widx_mux}, {true_val})"
-                        self.append_code(f"aw_{arr_name}_widx_ins.assign({widx_mux})")
-                    else:
-                        self.append_code(f"aw_{arr_name}_widx_ins.assign(Bits(1)(0))")
-                else:
-                    self.append_code(f"aw_{arr_name}_w_ins.assign(Bits(1)(0))")
-                    self.append_code(
-                        f"aw_{arr_name}_wdata_ins.assign({dump_type(arr.scalar_ty)}(0))"
-                        )
-                    if arr.index_bits > 0:
-                        self.append_code(
-                            f"aw_{arr_name}_widx_ins.assign(Bits({arr.index_bits})(0))"
-                            )
-                    else:
-                        self.append_code(f"aw_{arr_name}_widx_ins.assign(Bits(1)(0))")
+            if arr_container in self.array_users and arr_container not in self.sram_payload_arrays:
+                self._connect_array(arr_container)
 
         self.append_code('\n# --- Trigger Counter Delta Connections ---')
         for module in self.sys.modules:
@@ -1207,11 +1498,75 @@ class CIRCTDumper(Visitor):  # pylint: disable=too-many-instance-attributes
         self.append_code('system = System([Top], name="Top", output_directory="sv")')
         self.append_code('system.compile()')
 
+    def _connect_array(self, arr):
+        """Connect each array to its writers"""
+        arr_name = namify(arr.name)
+        port_mapping = self.array_write_port_mapping.get(arr, {})
+        if not port_mapping:
+            return
+
+        self.append_code(f'# Multi-port connections for {arr_name}')
+
+        # Connect each module to its dedicated port
+        for module, port_idx in port_mapping.items():
+            module_name = namify(module.name)
+            port_suffix = f"_port{port_idx}"
+
+            self.append_code(
+                f'aw_{arr_name}_w{port_suffix}.assign('
+                f'inst_{module_name}.{arr_name}_w{port_suffix})'
+            )
+            self.append_code(
+                f'aw_{arr_name}_wdata{port_suffix}.assign('
+                f'inst_{module_name}.{arr_name}_wdata{port_suffix})'
+            )
+            if arr.index_bits > 0:
+                self.append_code(
+                    f'aw_{arr_name}_widx{port_suffix}.assign('
+                    f'inst_{module_name}.{arr_name}_widx{port_suffix}'
+                    f".as_bits({arr.index_bits}))"
+                )
+            else:
+                self.append_code(
+                    f'aw_{arr_name}_widx{port_suffix}.assign(Bits(1)(0))'
+                )
+
+
 def generate_design(fname: str, sys: SysBuilder):
     """Generate a complete Verilog design file for the system."""
     with open(fname, 'w', encoding='utf-8') as fd:
         fd.write(HEADER)
+
         dumper = CIRCTDumper()
+
+        # Generate sramBlackbox module definitions for each SRAM
+        sram_modules = [m for m in sys.downstreams if isinstance(m, SRAM)]
+        if sram_modules:
+            for sram in sram_modules:
+                params = extract_sram_params(sram)
+                array_name = params['array_name']
+                data_width = params['data_width']
+                addr_width = params['addr_width']
+                dumper.memory_defs.add((data_width, addr_width, array_name))
+
+            # Write sramBlackbox module definitions
+            for data_width, addr_width, array_name in dumper.memory_defs:
+                fd.write(f'''
+@modparams
+def sramBlackbox_{array_name}():
+    class sramBlackboxImpl(Module):
+        module_name = "sram_blackbox_{array_name}"
+        clk = Clock()
+        rst_n = Input(Bits(1))
+        address = Input(Bits({addr_width}))
+        wd = Input(Bits({data_width}))
+        banksel = Input(Bits(1))
+        read = Input(Bits(1))
+        write = Input(Bits(1))
+        dataout = Output(Bits({data_width}))
+    return sramBlackboxImpl
+
+''')
         dumper.visit_system(sys)
         code = '\n'.join(dumper.code)
         fd.write(code)

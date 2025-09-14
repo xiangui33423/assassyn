@@ -24,11 +24,11 @@ class Sub(Module):
 class Lhs(Module):
     def __init__(self):
         ports={
-            'lhs_a': Port(Int(32)), 
+            'lhs_a': Port(Int(32)),
         }
         super().__init__(
             ports=ports ,
-        ) 
+        )
 
     @module.combinational
     def build(self, sub: Sub):
@@ -39,12 +39,12 @@ class Lhs(Module):
 class Rhs(Module):
     def __init__(self):
         ports={
-            'rhs_b': Port(Int(32)), 
+            'rhs_b': Port(Int(32)),
         }
         super().__init__(
             ports=ports ,
-        )  
-        
+        )
+
     @module.combinational
     def build(self, sub):
         b = self.pop_all_ports(True)
@@ -54,16 +54,16 @@ class Rhs(Module):
 
 class Driver(Module):
 
-    def __init__(self): 
+    def __init__(self):
         super().__init__(
             ports={} ,
-        )  
+        )
 
     @module.combinational
     def build(self, lhs: Lhs, rhs: Rhs):
         cnt = RegArray(Int(32), 1)
         v = cnt[0] + Int(32)(1)
-        cnt[0] = v
+        (cnt & self)[0] <= v
         vv = v + v
 
         lhs.async_called(lhs_a = v)

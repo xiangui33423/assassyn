@@ -6,6 +6,7 @@ from ...builder import SysBuilder
 
 TEMPLATE = '''
 import os
+import glob
 from pathlib import Path
 
 import cocotb
@@ -24,9 +25,7 @@ async def test_tb(dut):
     dut.rst.value = 0
     await Timer(500, units="ns")
     for cycle in range({}):
-        
         dut.clk.value = 1
-       
         await Timer(500, units="ns")
         dut.clk.value = 0
         await Timer(500, units="ns")
@@ -38,6 +37,8 @@ def runner():
     path = Path('./sv/hw')
     with open(path / 'filelist.f', 'r') as f:
         srcs = [path / i.strip() for i in f.readlines()]
+    sram_blackbox_files = glob.glob('sram_blackbox_*.sv')
+    srcs = srcs + sram_blackbox_files
     srcs = srcs + ['fifo.sv', 'trigger_counter.sv']
     runner = get_runner(sim)
     runner.build(sources=srcs, hdl_toplevel='Top', always=True)

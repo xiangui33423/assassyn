@@ -4,14 +4,14 @@ from assassyn import utils
 import assassyn
 
 class Adder(Module):
- 
+
     def __init__(self, record_ty):
         ports={
             'a': Port(record_ty),
             'b': Port(record_ty)
         }
         super().__init__(
-            ports=ports, 
+            ports=ports,
         )
 
     @module.combinational
@@ -40,7 +40,7 @@ class Driver(Module):
         # `bundle` is a syntactical salt to create a new record.
         new_record = record_ty.bundle(is_odd=is_odd, payload=new_value)
 
-        bundle[0] = new_record
+        (bundle & self)[0] <= new_record
 
         adder.async_called(a = new_record, b = new_record)
 

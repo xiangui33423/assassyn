@@ -1,12 +1,7 @@
 """Runtime code generation for Assassyn simulator."""
 
-
-
 def dump_runtime(fd):
-    """Generate the runtime module.
-
-    This matches the Rust function in src/backend/simulator/runtime.rs
-    """
+    """Generate the runtime module."""
     # Add imports
     fd.write("""
 use std::collections::VecDeque;
@@ -32,35 +27,91 @@ pub struct ArrayWrite<T: Sized + Default + Clone> {
   addr: usize,
   data: T,
   pusher: &'static str,
+  port_id: usize,  // Unique identifier for the write port
 }
 
-impl <T: Sized + Default + Clone> ArrayWrite<T> {
-  pub fn new(cycle: usize, addr: usize, data: T, pusher: &'static str) -> Self {
-    ArrayWrite { cycle, addr, data, pusher }
+impl<T: Sized + Default + Clone> ArrayWrite<T> {
+  pub fn new(cycle: usize, addr: usize, data: T, pusher: &'static str, port_id: usize) -> Self {
+    ArrayWrite {
+      cycle,
+      addr,
+      data,
+      pusher,
+      port_id,
+    }
+  }
+}
+
+// The write queue that can handle multiple writes per cycle
+pub struct PortXEQ<T: Sized + Default + Clone> {
+  // Map from cycle to list of writes for that cycle
+  q: BTreeMap<usize, Vec<ArrayWrite<T>>>,
+}
+
+impl <T: Sized + Default + Clone> PortXEQ<T> {
+  pub fn new() -> Self {
+    PortXEQ { q: BTreeMap::new() }
+  }
+
+  pub fn push(&mut self, event: ArrayWrite<T>) {
+    self.q.entry(event.cycle)
+      .or_insert_with(Vec::new)
+      .push(event);
+  }
+
+  pub fn pop_all(&mut self, current: usize) -> Vec<ArrayWrite<T>> {
+    let mut writes = Vec::new();
+
+    // Collect all writes up to current cycle
+    while let Some((&cycle, _)) = self.q.first_key_value() {
+      if cycle <= current {
+        if let Some((_, cycle_writes)) = self.q.pop_first() {
+          writes.extend(cycle_writes);
+        }
+      } else {
+        break;
+      }
+    }
+
+    writes
   }
 }
 
 pub struct Array<T: Sized + Default + Clone> {
   pub payload: Vec<T>,
-  pub write: XEQ<ArrayWrite<T>>,
+  pub write_port: PortXEQ<T>,
 }
 
 impl <T: Sized + Default + Clone> Array<T> {
   pub fn new(n: usize) -> Self {
     Array {
       payload: vec![T::default(); n],
-      write: XEQ::new(),
+      write_port: PortXEQ::new(),
     }
   }
+
   pub fn new_with_init(payload: Vec<T>) -> Self {
     Array {
       payload,
-      write: XEQ::new(),
+      write_port: PortXEQ::new(),
     }
   }
+
   pub fn tick(&mut self, cycle: usize) {
-    if let Some(event) = self.write.pop(cycle) {
-      self.payload[event.addr] = event.data;
+
+    let port_writes = self.write_port.pop_all(cycle);
+
+    // Apply writes with conflict resolution
+    // Strategy: Last write wins (could be changed to priority-based or other schemes)
+    let mut write_map: BTreeMap<usize, (T, &'static str, usize)> = BTreeMap::new();
+
+    for write in port_writes {
+      write_map.insert(write.addr, (write.data, write.pusher, write.port_id));
+    }
+
+    // Apply all writes
+    for (addr, (data, _, _)) in write_map {
+      self.payload[addr] = data;
     }
   }
 }
@@ -150,12 +201,12 @@ impl Cycled for FIFOPop {
   }
 }
 
+// Single-port write queue (kept for backward compatibility)
 pub struct XEQ<T: Sized + Cycled> {
   q: BTreeMap<usize, T>,
 }
 
 impl <T: Sized + Cycled>XEQ<T> {
-
   pub fn new() -> Self {
     XEQ { q: BTreeMap::new(), }
   }
@@ -170,7 +221,7 @@ impl <T: Sized + Cycled>XEQ<T> {
   }
 
   pub fn pop(&mut self, current: usize) -> Option<T> {
-    if self.q.first_key_value().map_or(false, |(cycle, _)| *cycle <= current) {
+    if self.q.first_key_value().map_or(false, |(cycle, _)| *cycle >= current) {
       self.q.pop_first().map(|(_, event)| event)
     } else {
       None

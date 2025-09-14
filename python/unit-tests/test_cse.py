@@ -7,7 +7,7 @@ from assassyn import utils
 
 
 class Adder(Module):
-  
+
     def __init__(self):
         ports={
             'a': Port(Int(32)),
@@ -29,11 +29,11 @@ class Driver(Module):
         super().__init__(
             ports={} ,
         )
-        
+
     @module.combinational
     def build(self, add: Adder):
         cnt = RegArray(Int(32), 1)
-        cnt[0] = cnt[0] + Int(32)(1)
+        (cnt & self)[0] <= cnt[0] + Int(32)(1)
         cond = cnt[0] < Int(32)(100)
         with Condition(cond):
             add.async_called(a = cnt[0], b = cnt[0])

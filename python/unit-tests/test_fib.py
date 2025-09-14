@@ -6,10 +6,10 @@ from assassyn import utils
 
 class Driver(Module):
 
-    def __init__(self): 
+    def __init__(self):
         super().__init__(
             ports={} ,
-        )  
+        )
 
     @module.combinational
     def build(self):
@@ -22,7 +22,7 @@ class Driver(Module):
 
         log('fib: {} + {} = {}', aa, bb, cc)
 
-        a[0] = bb
+        (a & self)[0] <= bb
         b[0] = cc
 
 def check(raw):

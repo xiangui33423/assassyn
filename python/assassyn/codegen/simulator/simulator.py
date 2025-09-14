@@ -7,7 +7,7 @@ from ...analysis import topo_downstream_modules, get_upstreams
 from .utils import dtype_to_rust_type, int_imm_dumper_impl, fifo_name
 from ...builder import SysBuilder
 from ...ir.block import CycledBlock
-from ...ir.expr import Expr
+from ...ir.expr import Expr,Bind
 from ...ir.module import Downstream, Module, SRAM
 from ...utils import namify, repo_path
 
@@ -47,25 +47,20 @@ def dump_simulator( #pylint: disable=too-many-locals, too-many-branches, too-man
     fd.write("_lib: Arc<Library>,\n")
     home = repo_path()
     # Add array fields to simulator struct
-    for elem in sys.arrays:
-
-        for array in elem.partition:
-            name = namify(array.name)
-
-            dtype = dtype_to_rust_type(array.scalar_ty)
-            fd.write(f"pub {name} : Array<{dtype}>, ")
-
-            # Handle array initialization
-            if array.initializer:
-                init_values = []
-                for x in array.initializer:
-                    init_values.append(int_imm_dumper_impl(array.scalar_ty, x))
-                init_str = ", ".join(init_values)
-                simulator_init.append(f"{name} : Array::new_with_init(vec![{init_str}]),")
-            else:
-                simulator_init.append(f"{name} : Array::new({array.size}),")
-
-            registers.append(name)
+    for array in sys.arrays:
+        name = namify(array.name)
+        dtype = dtype_to_rust_type(array.scalar_ty)
+        fd.write(f"pub {name} : Array<{dtype}>, ")
+        # Handle array initialization
+        if array.initializer:
+            init_values = []
+            for x in array.initializer:
+                init_values.append(int_imm_dumper_impl(array.scalar_ty, x))
+            init_str = ", ".join(init_values)
+            simulator_init.append(f"{name} : Array::new_with_init(vec![{init_str}]),")
+        else:
+            simulator_init.append(f"{name} : Array::new({array.size}),")
+        registers.append(name)
 
     # Track expressions with external visibility
     expr_validities = set()
@@ -99,6 +94,8 @@ def dump_simulator( #pylint: disable=too-many-locals, too-many-branches, too-man
 
     # Add value validity tracking for expressions with external visibility
     for expr in expr_validities:
+        if isinstance(expr, Bind):
+            continue
         name = namify(expr.as_operand())
         dtype = dtype_to_rust_type(expr.dtype)
         fd.write(f"pub {name}_value : Option<{dtype}>, ")
@@ -157,6 +154,7 @@ def dump_simulator( #pylint: disable=too-many-locals, too-many-branches, too-man
 
     # Get topological order for downstream modules
     downstreams = topo_downstream_modules(sys)
+
 
     # Module simulation functions
     simulators = []
@@ -232,10 +230,14 @@ def dump_simulator( #pylint: disable=too-many-locals, too-many-branches, too-man
         module_name = downstream.name
         fd.write(f"Simulator::simulate_{module_name}, ")
     fd.write("];\n")
-
+    all_modules = sys.modules[:] + sys.downstreams[:]
     # Initialize memory from files if needed
-    for sram in [m for m in sys.modules if isinstance(m, SRAM)]:
+    for sram in [m for m in all_modules if isinstance(m, SRAM)]:
+        if not sram.init_file:
+            continue
         init_file_path = os.path.join(config.get('resource_base', '.'), sram.init_file)
+        init_file_path = os.path.normpath(init_file_path)
+        init_file_path = init_file_path.replace('//', '/')
         array = sram.payload
         array_name = namify(array.name)
         fd.write(f'  load_hex_file(&mut sim.{array_name}.payload, "{init_file_path}");\n')
@@ -385,4 +387,3 @@ fn main() {{
 }}
 """)
     return True
-    

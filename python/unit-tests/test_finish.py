@@ -4,15 +4,15 @@ from assassyn import utils
 
 class Driver(Module):
 
-    def __init__(self): 
+    def __init__(self):
         super().__init__(
             ports={} ,
-        )  
-        
+        )
+
     @module.combinational
     def build(self):
         cnt = RegArray(Int(32), 1)
-        cnt[0] = cnt[0] + Int(32)(1)
+        (cnt & self)[0] <= cnt[0] + Int(32)(1)
         log('cnt: {}', cnt[0]);
         with Condition(cnt[0] >= Int(32)(50)):
             finish()

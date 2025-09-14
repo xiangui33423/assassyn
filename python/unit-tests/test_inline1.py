@@ -10,7 +10,7 @@ def ae(a, b):
     return (c, eq)
 
 class Driver(Module):
-     
+
     def __init__(self):
         super().__init__(ports={})
 
@@ -19,7 +19,7 @@ class Driver(Module):
         cnt = RegArray(Int(32), 1)
         k = cnt[0]
         v = k + Int(32)(1)
-        cnt[0] = v
+        (cnt & self)[0] <= v
         a, e = ae(v, v)
         log("add: {} + {} = {}", v, v, a)
         log("eq: {} == {} ? {}", v, v, e)
