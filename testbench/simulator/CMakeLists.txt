@@ -51,17 +51,23 @@ set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
 # Include directory
-include_directories(${PROJECT_SOURCE_DIR}/include)
+include_directories(${CMAKE_CURRENT_SOURCE_DIR}/../../3rd-party/ramulator2/src)
+
+# Find libramulator (platform-independent)
+find_library(RAMULATOR_LIBRARY
+  NAMES ramulator
+  PATHS ${CMAKE_CURRENT_SOURCE_DIR}/../../3rd-party/ramulator2
+  NO_DEFAULT_PATH
+)
 
 # Add wrapper shared library
 add_library(wrapper SHARED MyWrapper.cpp)
 
-# Link libramulator (assumes it's in the root directory)
-set(RAMULATOR_PATH ${CMAKE_CURRENT_SOURCE_DIR}/../../3rd-party/ramulator2)
-target_link_libraries(wrapper ${RAMULATOR_PATH}/libramulator.so)
+# Link libramulator using the found library
+target_link_libraries(wrapper ${RAMULATOR_LIBRARY})
 
 # Add main executable
 add_executable(main main.cpp)
 
 # Link against the wrapper and ramulator libraries
-target_link_libraries(main wrapper ${RAMULATOR_PATH}/libramulator.so)
+target_link_libraries(main wrapper ${RAMULATOR_LIBRARY})

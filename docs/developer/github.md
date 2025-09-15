@@ -1,24 +1,5 @@
 # Developer Doc
 
-## Rust Toolchain
-
-**Tooling:** This project is written purely in Rust, which means you can easily use this
-project as a library in other projects, or modularly invoke a unit test. It is highly recommended
-to use nightly build Rust, as we use the `join` method to calculate the span to the generated
-AST nodes, which is only available in nightly. Use the command below to set the nightly build:
-
-````
-rustup override set nightly
-````
-
-**Tests and Examples:** We use Rust's built-in test framework to write test cases for each module.
-You can use `cargo test [test-name]` to invoke a specific test case. If debugging output logs are
-desired, use `cargo test [test-name] -- --nocapture`.
-
-A test case not only checks the correctness of a newly written module, but also serves as an
-example to see how certain interfaces should be used. Moreover, it also offers a light-weighted
-way to write a toy example to play with this framework, and sanity-check the build success.
-
 ## Git & Github Usage
 
 **Formatting:** To ensure consistent code style, copy `assassyn/utils/pre-commit` to your
@@ -52,3 +33,17 @@ If there is a conflict, resolve it by rebasing the master branch to your develop
 - `git fetch upstream`
 - `git rebase upstream/master # Follow the git instructions to resolve conflicts`
 - `git push -f origin <your-dev-branch>`
+
+
+## Git Commit
+
+All the git commits later shall follow this format.
+````
+[tag] Summarize your changes.
+[file-changed-1] Describe the changes.
+[file-changed-2] Describe the changes.
+Optionally, justify the changes you made.
+````
+
+If the change is <=10 lines and 2 files, it is allowed to
+just have the 1st line.

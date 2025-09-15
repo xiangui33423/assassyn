@@ -25,7 +25,7 @@ def check(raw):
             expected += 1
     assert expected == 50 or expected == 51, f'{expected} not in [50, 51]'
 
-def test_driver():
+def test_finish():
     sys = SysBuilder('finish')
     with sys:
         driver = Driver()
@@ -44,4 +44,4 @@ def test_driver():
 
 
 if __name__ == '__main__':
-    test_driver()
+    test_finish()

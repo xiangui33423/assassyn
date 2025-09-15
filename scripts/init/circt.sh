@@ -1,68 +1,48 @@
 # Install PyCDE
 
-# Default values
-LLVM_PARALLEL_COMPILE_JOBS=16
-LLVM_PARALLEL_TABLEGEN_JOBS=16
-LLVM_PARALLEL_LINK_JOBS=1
-
-# Parse arguments
-for arg in "$@"; do
-  case $arg in
-    --llvm-compile-jobs=*)
-      LLVM_PARALLEL_COMPILE_JOBS="${arg#*=}"
-      ;;
-    --llvm-link-jobs=*)
-      LLVM_PARALLEL_LINK_JOBS="${arg#*=}"
-      ;;
-    --llvm-tbg-jobs=*)
-      LLVM_PARALLEL_TABLEGEN_JOBS="${arg#*=}"
-      ;;
-  esac
-
-done
-
 # TODO: Later add a flag to force CIRCT installation via source
 pip install --user pycde --break-system-packages
 if [ $? -eq 0 ]; then
   echo "CIRCT installed successfully via pip."
-  return 0
+  # Verify that PyCDE can be imported
+  python3 -c "import pycde; print('PyCDE import verification: SUCCESS')"
+  if [ $? -eq 0 ]; then
+    echo "PyCDE import test passed."
+    return 0
+  else
+    echo "WARNING: PyCDE installed via pip but import test failed."
+    return 1
+  fi
 fi
 
 RESTORE=`pwd`
 
-echo "Failed to install CIRCT via pip. Fall back to building from source."
-CURRENT_DIR_BEFORE_PYCDE_BUILD="$(pwd)"
-cd $ASSASSYN_HOME/3rd-party/circt
-mkdir -p build 
-cd build
-cmake \
-    -DCMAKE_BUILD_TYPE=Debug \
-    -DLLVM_ENABLE_PROJECTS=mlir \
-    -DLLVM_ENABLE_ASSERTIONS=ON \
-    -DLLVM_EXTERNAL_PROJECTS=circt \
-    -DLLVM_EXTERNAL_CIRCT_SOURCE_DIR=.. \
-    -DLLVM_TARGETS_TO_BUILD="host;RISCV" \
-    -DLLVM_PARALLEL_LINK_JOBS=${LLVM_PARALLEL_LINK_JOBS} \
-    -DLLVM_PARALLEL_COMPILE_JOBS=${LLVM_PARALLEL_COMPILE_JOBS} \
-    -DLLVM_PARALLEL_TABLEGEN_JOBS=${LLVM_PARALLEL_TABLEGEN_JOBS} \
-    -DMLIR_ENABLE_BINDINGS_PYTHON=ON \
-    -DCIRCT_BINDINGS_PYTHON_ENABLED=ON \
-    -DCIRCT_ENABLE_FRONTENDS=PyCDE \
-    -G Ninja ../llvm/llvm
+echo "Failed to install CIRCT via pip. Fall back to building from source using PyCDE setup."
+cd $ASSASSYN_HOME/3rd-party/circt/frontends/PyCDE
+
+# Install the built package to local directory
+
+CIRCT_DIRECTORY="`pwd`/../../" CIRCT_EXTRA_CMAKE_ARGS="-DESI_RUNTIME=OFF -DZ3_DISABLE=ON -DOR_TOOLS_DISABLE=ON" python -m build
+pip install ./dist/*.whl
 
 if [ $? -ne 0 ]; then
-  echo "Failed to configure CIRCT build. Please check the CMake configuration."
+  echo "Failed to install PyCDE. Please check the installation output."
+  cd $RESTORE
   return 1
 fi
 
-ninja
-
-if [ $? -ne 0 ]; then
-  echo "Failed to build CIRCT. Please check the build output."
+  
+# Verify that PyCDE can be imported
+python3 -c "import pycde; print('PyCDE import verification: SUCCESS')"
+if [ $? -eq 0 ]; then
+  echo "PyCDE import test passed."
+else
+  echo "WARNING: PyCDE built and installed but import test failed."
+  cd $RESTORE
   return 1
 fi
 
 cd $RESTORE
 
-echo "CIRCT built successfully."
+echo "PyCDE built and installed successfully to local directory."
 return 0

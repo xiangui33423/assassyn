@@ -43,7 +43,8 @@ class Driver(Module):
 def check(raw):
     cnt = 0
     for i in raw.split('\n'):
-        if f'Adder' in i:
+        if ('Adder:' in i) and ('@line:' in i):
+            print(i)
             line_toks = i.split()
             c = line_toks[-1]
             a = line_toks[-3]

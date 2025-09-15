@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import platform
 from ...analysis import topo_downstream_modules, get_upstreams
 from .utils import dtype_to_rust_type, int_imm_dumper_impl, fifo_name
 from ...builder import SysBuilder
@@ -10,6 +11,21 @@ from ...ir.block import CycledBlock
 from ...ir.expr import Expr,Bind
 from ...ir.module import Downstream, Module, SRAM
 from ...utils import namify, repo_path
+
+
+def dynamiclib_suffix():
+    """Return the dynamic library suffix for the current platform.
+    
+    Returns:
+        str: The dynamic library suffix (.dll for Windows, .dylib for macOS, .so for Linux)
+    """
+    system = platform.system().lower()
+    if system == "windows":
+        return ".dll"
+    if system == "darwin":
+        return ".dylib"
+    # Linux and other Unix-like systems
+    return ".so"
 
 
 def dump_simulator( #pylint: disable=too-many-locals, too-many-branches, too-many-statements
@@ -31,7 +47,12 @@ def dump_simulator( #pylint: disable=too-many-locals, too-many-branches, too-man
     # Write imports
     fd.write("use std::collections::VecDeque;\n")
     fd.write("use super::runtime::*;\n")
-    fd.write("use libloading::Library;\n")
+    fd.write("use super::ramulator::*;\n")
+    platform_os = platform.system().lower()
+    if platform_os == 'darwin':
+        fd.write("use libloading::os::unix::{Library, Symbol, RTLD_LAZY, RTLD_GLOBAL};\n")
+    else:
+        fd.write("use libloading::Library;\n")
     fd.write("use std::sync::Arc;\n")
     fd.write("use num_bigint::{BigInt, BigUint};\n")
     fd.write("use rand::seq::SliceRandom;\n\n")
@@ -43,8 +64,7 @@ def dump_simulator( #pylint: disable=too-many-locals, too-many-branches, too-man
 
     # Begin simulator struct definition
     fd.write("pub struct Simulator { pub stamp: usize, ")
-    fd.write("pub mem_interface: Arc<MemoryInterface<'static>>,\n")
-    fd.write("_lib: Arc<Library>,\n")
+    fd.write("pub mem_interface: MemoryInterface,\n")
     home = repo_path()
     # Add array fields to simulator struct
     for array in sys.arrays:
@@ -110,25 +130,21 @@ def dump_simulator( #pylint: disable=too-many-locals, too-many-branches, too-man
 
     # Constructor
     fd.write("  pub fn new() -> Self {\n")
-    fd.write(f"""
-    let lib = Arc::new(
-        unsafe {{ Library::new("{home}/testbench/simulator/build/lib/libwrapper.so") }}
-            .expect("Failed to load library"),
-    );
-    let lib_ref = lib.clone();
-
-    let mem = unsafe {{
-        let lib_static = Box::leak(Box::new(lib.clone()));
-
-        Arc::new(MemoryInterface::new(&*lib_static).expect("Failed to create MemoryInterface"))
-    }};
-    """)
+    fd.write("let mem = unsafe {")
+    midfix = '/testbench/simulator/build/lib/libwrapper'
+    if platform_os == 'darwin':
+        fd.write(f'let lib = Library::open(Some("{home}{midfix}{dynamiclib_suffix()}"), '
+                 'RTLD_GLOBAL | RTLD_LAZY).unwrap();')
+    elif platform_os == 'windows':
+        raise NotImplementedError
+    else:
+        fd.write(f'let lib = Library::new("{home}{midfix}{dynamiclib_suffix()}").unwrap();')
+    fd.write('MemoryInterface::new(lib.into()).expect("Failed to create MemoryInterface") };')
     fd.write("    Simulator {\n")
     fd.write("      stamp: 0,\n")
     for init in simulator_init:
         fd.write(f"      {init}\n")
     fd.write("      mem_interface: mem,\n")
-    fd.write("      _lib: lib,\n")
     fd.write("    }\n")
     fd.write("  }\n\n")
 
@@ -331,6 +347,7 @@ def dump_main(fd):
 mod runtime;
 mod modules;
 mod simulator;
+mod ramulator;
 
 fn main() {
   simulator::simulate();
@@ -352,12 +369,12 @@ fn main() {{
 
     // Verify library files exist
     assert!(
-        Path::new(&format!("{{}}/libwrapper.so", wrapper_path)).exists(),
-        "libwrapper.so not found"
+        Path::new(&format!("{{}}/libwrapper{dynamiclib_suffix()}", wrapper_path)).exists(),
+        "libwrapper{dynamiclib_suffix()} not found"
     );
     assert!(
-        Path::new(&format!("{{}}/libramulator.so", ramulator_path)).exists(),
-        "libramulator.so not found"
+        Path::new(&format!("{{}}/libramulator{dynamiclib_suffix()}", ramulator_path)).exists(),
+        "libramulator{dynamiclib_suffix()} not found"
     );
 
     // Set library search paths
@@ -375,7 +392,7 @@ fn main() {{
     println!("cargo:rustc-link-arg=-Wl,-rpath,{{}}", wrapper_path);
 
     // Set DT_RUNPATH instead of DT_RPATH
-    println!("cargo:rustc-link-arg=-Wl,--enable-new-dtags");
+    // println!("cargo:rustc-link-arg=-Wl,--enable-new-dtags");
 
     // Link against libraries
     println!("cargo:rustc-link-lib=ramulator");

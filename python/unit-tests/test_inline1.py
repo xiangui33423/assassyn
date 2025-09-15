@@ -27,12 +27,12 @@ class Driver(Module):
 def check(raw):
     for i in raw.split('\n'):
         line_toks = i.split()
-        if 'add' in i:
+        if 'add:' in i:
             c = line_toks[-1]
             a = line_toks[-3]
             b = line_toks[-5]
             assert int(a) + int(b) == int(c)
-        elif 'eq' in i:
+        elif 'eq:' in i:
             a = line_toks[-5]
             b = line_toks[-3]
             c = line_toks[-1]

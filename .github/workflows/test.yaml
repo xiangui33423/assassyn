@@ -59,7 +59,7 @@ jobs:
         id: cache-circt
         uses: actions/cache@v4
         with:
-          path: ${{ github.workspace }}/3rd-party/circt/build
+          path: ${{ github.workspace }}/3rd-party/circt/frontends/PyCDE
           key: ${{ runner.os }}-circt-${{ hashFiles('circt/.git/HEAD') }} 
           restore-keys: |
             ${{ runner.os }}-circt- 

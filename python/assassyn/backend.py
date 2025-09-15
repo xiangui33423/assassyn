@@ -1,14 +1,13 @@
 '''The programming interfaces involing assassyn backends'''
 
 import os
-import tempfile
 from pathlib import Path
 
 from .builder import SysBuilder
 from . import codegen
 
 def config( # pylint: disable=too-many-arguments
-        path=tempfile.gettempdir(),
+        path='./workspace',
         resource_base=None,
         pretty_printer=True,
         verbose=True,

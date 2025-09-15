@@ -3,7 +3,8 @@ pip install --user -r \
 
 if [ $? -ne 0 ]; then
   echo "Failed to install Python dependencies. Please check the requirements."
-  exit 1
+  return 1
 else
   echo "Python dependencies installed successfully."
+  return 0
 fi
