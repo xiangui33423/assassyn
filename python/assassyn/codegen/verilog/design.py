@@ -4,8 +4,8 @@
 from typing import List, Dict, Tuple
 from string import Formatter
 from collections import defaultdict, deque
+from .utils import HEADER,dump_type, dump_type_cast,get_sram_info,extract_sram_params,ensure_bits
 
-from .utils import HEADER,dump_type, dump_type_cast,get_sram_info,extract_sram_params
 from ...analysis import expr_externally_used
 from ...ir.module import Module, Downstream, Port,SRAM
 from ...builder import SysBuilder
@@ -85,26 +85,16 @@ class CIRCTDumper(Visitor):  # pylint: disable=too-many-instance-attributes,too-
         """Get the current predicate for conditional execution."""
         if not self.cond_stack:
             return "Bits(1)(1)"
-        return " & ".join([s for s, _ in self.cond_stack])
+        pred_parts = []
+        for s, _ in self.cond_stack:
+            s_bits = ensure_bits(s)
+            pred_parts.append(s_bits)
+        return " & ".join(pred_parts)
 
     def get_external_port_name(self, node: Expr) -> str:
         """Get the mangled port name for an external value."""
         producer_module = node.parent.module
         producer_name = namify(producer_module.name)
-
-        # if node not in self.expr_to_name:
-        #     base_name = namify(node.as_operand())
-        #     if not base_name or base_name == '_':
-        #         base_name = 'tmp'
-        #     unique_name = f"{base_name}_{self.name_counters[base_name]}"
-        #     self.name_counters[base_name] += 1
-        #     self.expr_to_name[node] = unique_name
-
-        # base_port_name = namify(node.as_operand())
-        # if base_port_name.startswith("_"):
-        #     base_port_name = f"port{base_port_name}"
-        # port_name = f"{producer_name}_{base_port_name}"
-
         base_port_name = namify(node.as_operand())
         if base_port_name.startswith("_"):
             base_port_name = f"port{base_port_name}"
@@ -419,9 +409,9 @@ class CIRCTDumper(Visitor):  # pylint: disable=too-many-instance-attributes,too-
                 array_idx = unwrap_operand(expr.idx)
                 array_idx = (self.dump_rval(array_idx, False)
                             if not isinstance(array_idx, Const) else array_idx.value)
-
+                index_bits = array_ref.index_bits if array_ref.index_bits > 0 else 1
                 if dump_type(expr.idx.dtype)!=Bits and not isinstance(array_idx, int):
-                    array_idx = f"{array_idx}.as_bits()"
+                    array_idx = f"{array_idx}.as_bits({index_bits})"
 
                 array_name = self.dump_rval(array_ref, False)
                 if isinstance(expr.dtype, Record):
@@ -531,15 +521,7 @@ class CIRCTDumper(Visitor):  # pylint: disable=too-many-instance-attributes,too-
             intrinsic = expr.opcode
             if intrinsic == Intrinsic.FINISH:
                 predicate_signal = self.get_pred()
-                verilog_template = """
-`ifndef SYNTHESIS
-  always_ff @(posedge clk)
-    // Finish if the execution path is active AND the specific finish condition is met.
-    if ({{0}} & {{1}}) $finish;
-`endif
-"""
-                self.finish_body.append(f"sv.VerbatimOp({verilog_template!r}, "
-                        f"substitutions=[{predicate_signal}.value, executed_wire.value])")
+                self.finish_conditions.append((predicate_signal, "executed_wire"))
                 body = None
             elif intrinsic == Intrinsic.ASSERT:
                 self.expose('expr', expr.args[0])
@@ -549,7 +531,7 @@ class CIRCTDumper(Visitor):  # pylint: disable=too-many-instance-attributes,too-
 
                 final_cond = cond
                 if is_async_callee:
-                    final_cond = f"({cond}.as_bits() & self.trigger_counter_pop_valid)"
+                    final_cond = f"({cond} & self.trigger_counter_pop_valid)"
 
                 self.wait_until = final_cond
             elif intrinsic == Intrinsic.BARRIER:
@@ -667,9 +649,17 @@ class CIRCTDumper(Visitor):  # pylint: disable=too-many-instance-attributes,too-
             else:
                 self.append_code(f"executed_wire = {' & '.join(exec_conditions)}")
 
-        if self.finish_body:
-            for finish in self.finish_body:
-                self.append_code(finish)
+        if self.finish_conditions:
+            finish_terms = []
+            for pred, exec_signal in self.finish_conditions:
+                finish_terms.append(f"({pred} & {exec_signal})")
+
+            if len(finish_terms) == 1:
+                self.append_code(f'self.finish = {finish_terms[0]}')
+            else:
+                self.append_code(f'self.finish = {" | ".join(finish_terms)}')
+        else:
+            self.append_code('self.finish = Bits(1)(0)')
 
         if isinstance(self.current_module,SRAM):
             sram_info = get_sram_info(self.current_module)
@@ -839,7 +829,7 @@ class CIRCTDumper(Visitor):  # pylint: disable=too-many-instance-attributes,too-
         self.cond_stack = []
         self.current_module = node
         self.exposed_ports_to_add = []
-        self.finish_body = []
+        self.finish_conditions = []
 
         self.visit_block(node.body)
         self.cleanup_post_generation()
@@ -862,6 +852,7 @@ class CIRCTDumper(Visitor):  # pylint: disable=too-many-instance-attributes,too-
         self.append_code('rst = Reset()')
         self.append_code('executed = Output(Bits(1))')
         self.append_code('cycle_count = Input(UInt(64))')
+        self.append_code('finish = Output(Bits(1))')
 
         if is_downstream:
             if node in self.downstream_dependencies:
@@ -1143,6 +1134,7 @@ class CIRCTDumper(Visitor):  # pylint: disable=too-many-instance-attributes,too-
         self.append_code('clk = Clock()')
         self.append_code('rst = Reset()')
         self.append_code('global_cycle_count = Output(UInt(64))')
+        self.append_code('global_finish = Output(Bits(1))')
         self.append_code('')
         self.append_code('@generator')
         self.append_code('def construct(self):')
@@ -1457,6 +1449,27 @@ class CIRCTDumper(Visitor):  # pylint: disable=too-many-instance-attributes,too-
                     f".assign(inst_{mod_name}.{callee_mod_name}_{callee_port_name}_push_data"
                     f".as_bits())"
                     )
+        self.append_code('\n# --- Global Finish Signal Collection ---')
+        finish_signals = []
+        for module in sorted_modules:
+            mod_name = namify(module.name)
+            # Check if this module type has finish conditions
+            if hasattr(module, 'body'):
+                # Check if module contains FINISH intrinsics
+                has_finish = any(
+                    isinstance(expr, Intrinsic) and expr.opcode == Intrinsic.FINISH
+                    for expr in self._walk_expressions(module.body)
+                )
+                if has_finish:
+                    finish_signals.append(f'inst_{mod_name}.finish')
+
+        if finish_signals:
+            if len(finish_signals) == 1:
+                self.append_code(f'self.global_finish = {finish_signals[0]}')
+            else:
+                self.append_code(f'self.global_finish = {" | ".join(finish_signals)}')
+        else:
+            self.append_code('self.global_finish = Bits(1)(0)')
 
         # self.append_code('\n# --- Tie off unused FIFO push ports ---')
         for module in self.sys.modules:
