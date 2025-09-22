@@ -7,12 +7,12 @@ from decorator import decorator
 
 from ...builder import Singleton, ir_builder
 from ..block import Block
+from ..dtype import DType
 from ..expr import Bind, FIFOPop, PureIntrinsic, FIFOPush, AsyncCall, Expr
 from ..expr.intrinsic import wait_until
 from .base import ModuleBase
 
 if typing.TYPE_CHECKING:
-    from ..dtype import DType
     from ..value import Value
 
 def _reserved_module_name(name):
@@ -41,11 +41,13 @@ class Module(ModuleBase):
     ATTR_DISABLE_ARBITER = 1
     ATTR_TIMING = 2
     ATTR_MEMORY = 3
+    ATTR_EXTERNAL = 4
 
     MODULE_ATTR_STR = {
       ATTR_DISABLE_ARBITER: 'no_arbiter',
       ATTR_MEMORY: 'memory',
       ATTR_TIMING: 'timing',
+      ATTR_EXTERNAL: 'external',
     }
 
     def __init__(self, ports, no_arbiter=False):
@@ -171,8 +173,6 @@ class Port:
     _users: typing.List[Expr]  # Users of the port
 
     def __init__(self, dtype: DType):
-        #pylint: disable=import-outside-toplevel
-        from ..dtype import DType
         assert isinstance(dtype, DType)
         self.dtype = dtype
         self.name = self.module = None
@@ -226,3 +226,44 @@ def combinational(
         res = func(*args, **kwargs)
     Singleton.builder.exit_context_of('module')
     return res
+
+
+class Wire:
+    '''A wire for connecting to external modules.'''
+
+    def __init__(self, dtype, direction=None, module=None):
+        if dtype is not None:
+            assert isinstance(dtype, DType)
+        self.dtype = dtype
+        self.direction = direction  # 'input', 'output', or None (undirected)
+        self.value = None  # Assigned value for input wires
+        self._users = []  # Users of the wire
+        self.name = None  # Name of the wire
+        self.module = module  # Owning external module
+        # For backward compatibility, treat the owning module as parent
+        self.parent = module
+
+    @property
+    def users(self):
+        '''Get the users of the wire.'''
+        return self._users
+
+    def __repr__(self):
+        dir_str = f", {self.direction}" if self.direction else ""
+        return f'Wire<{self.dtype}{dir_str}>'
+
+    def assign(self, value):
+        '''Assign a value to this wire (for input wires).'''
+        if self.direction == 'output':
+            raise ValueError("Cannot assign to output wire")
+        self.value = value
+
+    def as_operand(self):
+        '''Dump the wire as a right-hand side reference.'''
+        if self.module is not None and self.name is not None:
+            return f'{self.module.as_operand()}.{self.name}'
+        if self.name is not None:
+            return self.name
+        # Fallback if name is not set
+        direction_str = f"_{self.direction}" if self.direction else ""
+        return f'wire{direction_str}'

@@ -2,12 +2,21 @@
 """Verilog design generation and code dumping."""
 
 from typing import List, Dict, Tuple
-from string import Formatter
 from collections import defaultdict, deque
-from .utils import HEADER,dump_type, dump_type_cast,get_sram_info,extract_sram_params,ensure_bits
+from string import Formatter
+
+from .utils import (
+    HEADER,
+    dump_type,
+    dump_type_cast,
+    get_sram_info,
+    extract_sram_params,
+    ensure_bits,
+)
 
 from ...analysis import expr_externally_used
-from ...ir.module import Module, Downstream, Port,SRAM
+from ...ir.module import Module, Downstream, Port,SRAM, Wire
+from ...ir.module.external import ExternalSV
 from ...builder import SysBuilder
 from ...ir.visitor import Visitor
 from ...ir.block import Block, CondBlock,CycledBlock
@@ -33,7 +42,9 @@ from ...ir.expr import (
     Select,
     Bind,
     Select1Hot,
-    Intrinsic
+    Intrinsic,
+    WireAssign,
+    WireRead
 )
 
 
@@ -79,7 +90,11 @@ class CIRCTDumper(Visitor):  # pylint: disable=too-many-instance-attributes,too-
         self.memory_defs = set()
         self.expr_to_name = {}
         self.name_counters = defaultdict(int)
-
+        # Track external module usage for downstream modules
+        self.external_wire_assignments = []
+        self.pending_external_inputs = defaultdict(list)
+        self.instantiated_external_modules = set()
+        self.external_modules = []
 
     def get_pred(self) -> str:
         """Get the current predicate for conditional execution."""
@@ -101,13 +116,30 @@ class CIRCTDumper(Visitor):  # pylint: disable=too-many-instance-attributes,too-
         port_name = f"{producer_name}_{base_port_name}"
         return port_name
 
+    # pylint: disable=protected-access
+    @staticmethod
+    def _is_external_module(module: Module) -> bool:
+        """Return True if the module represents an external implementation."""
 
-    def dump_rval(self,node, with_namespace: bool,module_name:str=None) -> str:  # pylint: disable=too-many-return-statements,too-many-branches
+        if isinstance(module, ExternalSV):
+            return True
+
+        attrs = getattr(module, '_attrs', None)
+        return attrs is not None and Module.ATTR_EXTERNAL in attrs
+
+
+    # pylint: disable=too-many-return-statements,too-many-branches
+    def dump_rval(self,node, with_namespace: bool,module_name:str=None) -> str:
         """Dump a reference to a node with options."""
 
         node = unwrap_operand(node)
-        if isinstance(node, Expr) and node in self.current_module.externals \
-            and not self.is_top_generation:
+        if (
+            isinstance(node, Expr)
+            and self.current_module is not None
+            and hasattr(self.current_module, 'externals')
+            and node in self.current_module.externals
+            and not self.is_top_generation
+        ):
             return f"self.{self.get_external_port_name(node)}"
         if isinstance(node, Module):
             return namify(node.name)
@@ -151,6 +183,9 @@ class CIRCTDumper(Visitor):  # pylint: disable=too-many-instance-attributes,too-
 
         if isinstance(node, RecordValue):
             return self.dump_rval(node.value(), with_namespace, module_name)
+        if isinstance(node, Wire):
+            # For wires, we use their name directly
+            return namify(node.name)
 
         raise ValueError(f"Unknown node of kind {type(node).__name__}")
 
@@ -193,6 +228,8 @@ class CIRCTDumper(Visitor):  # pylint: disable=too-many-instance-attributes,too-
             cond_str = self.dump_rval(node.cond, False)
             self.cond_stack.append((f"({cond_str})", node))
             def has_side_effect(block: Block) -> bool:
+                if block.body is None:
+                    return False
                 for item in block.body:
                     if isinstance(item, Log):
                         return True
@@ -206,22 +243,24 @@ class CIRCTDumper(Visitor):  # pylint: disable=too-many-instance-attributes,too-
         elif is_cycle:
             self.cond_stack.append((f"(self.cycle_count == {node.cycle})", node))
 
-        for i in node.body:
-            if isinstance(i, Expr):
-                self.visit_expr(i)
-            elif isinstance(i, Block):
-                self.visit_block(i)
-            elif isinstance(i, RecordValue):
-                pass
-            else:
-                print(i)
-                raise ValueError(f'Unknown node type: {type(i)}')
+        if node is not None and node.body is not None:
+            for i in node.body:
+                if isinstance(i, Expr):
+                    self.visit_expr(i)
+                elif isinstance(i, Block):
+                    self.visit_block(i)
+                elif isinstance(i, RecordValue):
+                    pass
+                else:
+                    print(i)
+                    raise ValueError(f'Unknown node type: {type(i)}')
 
         if is_cond or is_cycle:
             self.cond_stack.pop()
 
 
-    def visit_expr(self, expr: Expr):  # pylint: disable=arguments-renamed,too-many-locals,too-many-branches,too-many-statements
+    # pylint: disable=arguments-renamed,too-many-locals,too-many-branches,too-many-statements
+    def visit_expr(self, expr: Expr):
         self.append_code(f'# {expr}')
         body = None
         rval = self.dump_rval(expr, False)
@@ -326,6 +365,7 @@ class CIRCTDumper(Visitor):  # pylint: disable=too-many-instance-attributes,too-
                     else:
                         expose_signal = f"int({base_value})"
                     arg_print_snippets.append(expose_signal)
+
                 else:
                     arg_print_snippets.append(str(operand.value))
             f_string_content_parts = []
@@ -382,7 +422,8 @@ class CIRCTDumper(Visitor):  # pylint: disable=too-many-instance-attributes,too-
 
             module_info = f"[{namify(self.current_module.name)}]"
 
-            cycle_info = f"Cycle @{{float(dut.global_cycle_count.value):.2f}}:"# pylint: disable=W1309
+            # pylint: disable-next=W1309
+            cycle_info = f"Cycle @{{float(dut.global_cycle_count.value):.2f}}:"
 
             final_print_string = (
                  f'f"{line_info} {cycle_info} {module_info:<20} {f_string_content}"'
@@ -538,9 +579,9 @@ class CIRCTDumper(Visitor):  # pylint: disable=too-many-instance-attributes,too-
                 body = None
             elif intrinsic == Intrinsic.MEM_WRITE:
             # Create a temporary ArrayWrite to reuse existing logic
-                array = unwrap_operand(expr.args[0])
-                idx = unwrap_operand(expr.args[1])
-                val = unwrap_operand(expr.args[2])
+                array = unwrap_operand(expr.operands[0])
+                idx = unwrap_operand(expr.operands[1])
+                val = unwrap_operand(expr.operands[2])
                 temp_write = ArrayWrite(array, idx, val)
                 temp_write.parent = expr.parent
                 self.expose('array', temp_write)
@@ -548,8 +589,8 @@ class CIRCTDumper(Visitor):  # pylint: disable=too-many-instance-attributes,too-
 
             elif intrinsic == Intrinsic.MEM_READ:
                 # Create a temporary ArrayRead to reuse existing logic
-                array = unwrap_operand(expr.args[0])
-                idx = unwrap_operand(expr.args[1])
+                array = unwrap_operand(expr.operands[0])
+                idx = unwrap_operand(expr.operands[1])
 
                 temp_read = ArrayRead(array, idx)
                 temp_read.parent = expr.parent
@@ -559,10 +600,54 @@ class CIRCTDumper(Visitor):  # pylint: disable=too-many-instance-attributes,too-
 
             else:
                 raise ValueError(f"Unknown block intrinsic: {expr}")
+        elif isinstance(expr, WireAssign):
+            # Annotate external wire assigns so they show up in the generated script
+            body = f"# External wire assign: {expr}"
+            if isinstance(self.current_module, Downstream):
+                wire = expr.wire
+                value = expr.value
+                owner = getattr(wire, 'parent', None) or getattr(wire, 'module', None)
+                wire_name = getattr(wire, 'name', None)
+                if isinstance(owner, ExternalSV) and wire_name:
+                    self.pending_external_inputs[owner].append((wire_name, value))
+        elif isinstance(expr, WireRead):
+            # Document reads from external module outputs and emit the assignment
+            self.append_code(f'# External wire read: {expr}')
+            wire = expr.wire
+            owner = getattr(wire, 'parent', None) or getattr(wire, 'module', None)
+            wire_name = getattr(wire, 'name', None)
+
+            if (
+                isinstance(owner, ExternalSV)
+                and owner not in self.instantiated_external_modules
+            ):
+                ext_module_name = namify(owner.name)
+                inst_name = f"{ext_module_name.lower()}_inst"
+                self.append_code('# instantiate external module')
+                connections = []
+                if getattr(owner, 'has_clock', False):
+                    connections.append('clk=self.clk')
+                if getattr(owner, 'has_reset', False):
+                    connections.append('rst=self.rst')
+                for input_name, input_val in self.pending_external_inputs.get(owner, []):
+                    connections.append(f"{input_name}={self.dump_rval(input_val, False)}")
+                if connections:
+                    self.append_code(f'{inst_name} = {ext_module_name}({", ".join(connections)})')
+                else:
+                    self.append_code(f'{inst_name} = {ext_module_name}()')
+                self.instantiated_external_modules.add(owner)
+                self.pending_external_inputs.pop(owner, None)
+
+            if owner is not None and wire_name is not None:
+                inst_name = f"{namify(owner.name).lower()}_inst"
+                body = f"{rval} = {inst_name}.{wire_name}"
+            else:
+                body = f"# TODO: unresolved external wire read for {expr}"
         else:
             raise ValueError(f"Unhandled expression type: {type(expr).__name__}")
 
-        if expr.is_valued() and expr_externally_used(expr, True):
+        if expr.is_valued() and not isinstance(expr, WireRead) \
+                and expr_externally_used(expr, True):
             if not isinstance(unwrap_operand(expr), Const):
                 self.expose('expr', expr)
 
@@ -623,7 +708,8 @@ class CIRCTDumper(Visitor):  # pylint: disable=too-many-instance-attributes,too-
 
         self.append_code('self.mem_read_enable = Bits(1)(1)')  # Always enable reads
 
-    def cleanup_post_generation(self):# pylint: disable=too-many-locals,too-many-branches,too-many-statements,too-many-nested-blocks
+    # pylint: disable=too-many-locals,too-many-branches,too-many-statements,too-many-nested-blocks
+    def cleanup_post_generation(self):
         """genearting signals for connecting modules"""
         self.append_code('')
 
@@ -661,11 +747,11 @@ class CIRCTDumper(Visitor):  # pylint: disable=too-many-instance-attributes,too-
         else:
             self.append_code('self.finish = Bits(1)(0)')
 
-        if isinstance(self.current_module,SRAM):
+        if isinstance(self.current_module, SRAM):
             sram_info = get_sram_info(self.current_module)
             if sram_info:
                 self._generate_sram_control_signals(sram_info)
-        #pylint: disable=too-many-nested-blocks
+        # pylint: disable=too-many-nested-blocks
         for key, exposes in self._exposes.items():
             if isinstance(key, Array):
                 if key in self.sram_payload_arrays:
@@ -806,6 +892,9 @@ class CIRCTDumper(Visitor):  # pylint: disable=too-many-instance-attributes,too-
                     dtype_str = f"Bits({actual_bits})"
 
 
+                # Special handling for Wire objects - they don't need exposed ports
+                if isinstance(key, Wire):
+                    continue
                 # Add port declaration strings to our list
                 self.exposed_ports_to_add.append(f'expose_{exposed_name} = Output({dtype_str})')
                 self.exposed_ports_to_add.append(f'valid_{exposed_name} = Output(Bits(1))')
@@ -814,10 +903,12 @@ class CIRCTDumper(Visitor):  # pylint: disable=too-many-instance-attributes,too-
                 self.append_code(f'# Expose: {expr}')
                 self.append_code(f'self.expose_{exposed_name} = {rval}')
                 self.append_code(f'self.valid_{exposed_name} = executed_wire')
+
         self.append_code('self.executed = executed_wire')
 
 
-    def visit_module(self, node: Module):# pylint: disable=too-many-locals,too-many-branches,too-many-statements
+    # pylint: disable=too-many-locals,too-many-branches,too-many-statements
+    def visit_module(self, node: Module):
         # STAGE 1: ANALYSIS & BODY GENERATION
         original_code_buffer = self.code
         original_indent = self.indent
@@ -829,9 +920,15 @@ class CIRCTDumper(Visitor):  # pylint: disable=too-many-instance-attributes,too-
         self.cond_stack = []
         self.current_module = node
         self.exposed_ports_to_add = []
+        self.finish_body = []
         self.finish_conditions = []
+        self.external_wire_assignments = []
+        self.pending_external_inputs.clear()
+        self.instantiated_external_modules.clear()
 
-        self.visit_block(node.body)
+        # For downstream modules, we still need to process the body
+        if node.body is not None:
+            self.visit_block(node.body)
         self.cleanup_post_generation()
 
         construct_method_body = self.code
@@ -879,13 +976,15 @@ class CIRCTDumper(Visitor):  # pylint: disable=too-many-instance-attributes,too-
         elif is_driver or node in self.async_callees:
             self.append_code('trigger_counter_pop_valid = Input(Bits(1))')
 
-        if not is_downstream:
+        if not is_downstream and not self._is_external_module(node):
             for i in node.ports:
                 name = namify(i.name)
                 self.append_code(f'{name} = Input({dump_type(i.dtype)})')
                 self.append_code(f'{name}_valid = Input(Bits(1))')
-                has_pop = any(isinstance(e, FIFOPop) and e.fifo == i \
-                              for e in self._walk_expressions(node.body))
+                has_pop = any(
+                    isinstance(e, FIFOPop) and e.fifo == i
+                    for e in self._walk_expressions(node.body)
+                )
                 if has_pop:
                     self.append_code(f'{name}_pop_ready = Output(Bits(1))')
 
@@ -896,19 +995,36 @@ class CIRCTDumper(Visitor):  # pylint: disable=too-many-instance-attributes,too-
         unique_call_handshake_targets = {c.bind.callee for c in calls}
         unique_output_push_ports = {p.fifo for p in pushes}
 
+        # Skip external modules for handshake targets
+        filtered_push_targets = set()
         for module, fifo_name in unique_push_handshake_targets:
+            if not self._is_external_module(module):
+                filtered_push_targets.add((module, fifo_name))
+
+        filtered_call_targets = set()
+        for callee in unique_call_handshake_targets:
+            if not self._is_external_module(callee):
+                filtered_call_targets.add(callee)
+
+        for module, fifo_name in filtered_push_targets:
             port_name = f'fifo_{namify(module.name)}_{namify(fifo_name)}_push_ready'
             self.append_code(f'{port_name} = Input(Bits(1))')
-        for callee in unique_call_handshake_targets:
+        for callee in filtered_call_targets:
             port_name = f'{namify(callee.name)}_trigger_counter_delta_ready'
             self.append_code(f'{port_name} = Input(Bits(1))')
 
+        # Skip external modules for output push ports
+        filtered_output_push_ports = set()
         for fifo_port in unique_output_push_ports:
+            if not self._is_external_module(fifo_port.module):
+                filtered_output_push_ports.add(fifo_port)
+
+        for fifo_port in filtered_output_push_ports:
             port_prefix = f"{namify(fifo_port.module.name)}_{namify(fifo_port.name)}"
             self.append_code(f'{port_prefix}_push_valid = Output(Bits(1))')
             dtype = fifo_port.dtype
             self.append_code(f'{port_prefix}_push_data = Output({dump_type(dtype)})')
-        for callee in unique_call_handshake_targets:
+        for callee in filtered_call_targets:
             self.append_code(f'{namify(callee.name)}_trigger = Output(UInt(8))')
         # pylint: disable=too-many-nested-blocks
         for arr_container in self.sys.arrays:
@@ -959,6 +1075,10 @@ class CIRCTDumper(Visitor):  # pylint: disable=too-many-instance-attributes,too-
 
     def _walk_expressions(self, block: Block):
         """Recursively walks a block and yields all expressions."""
+        if block is None:
+            return
+        if block.body is None:
+            return
         for item in block.body:
             if isinstance(item, Expr):
                 yield item
@@ -980,12 +1100,31 @@ class CIRCTDumper(Visitor):  # pylint: disable=too-many-instance-attributes,too-
 
         return mux
 
-    def visit_system(self, node: SysBuilder):# pylint: disable=too-many-locals,R0912
+    # pylint: disable=too-many-locals,R0912
+    def visit_system(self, node: SysBuilder):
         sys = node
         self.sys = sys
         for module in sys.downstreams:
             if isinstance(module, SRAM) and hasattr(module, 'payload'):
                 self.sram_payload_arrays.add(module.payload)
+
+        # Collect external modules
+        self.external_modules = []
+        for module in sys.modules + sys.downstreams:
+            if self._is_external_module(module):
+                if module not in self.external_modules:
+                    self.external_modules.append(module)
+            # Also check for external modules used within downstream modules
+            for expr in self._walk_expressions(module.body):
+                if isinstance(expr, AsyncCall):
+                    callee = expr.bind.callee
+                    if self._is_external_module(callee):
+                        if callee not in self.external_modules:
+                            self.external_modules.append(callee)
+
+        # Generate PyCDE wrapper classes for external modules first
+        for ext_module in self.external_modules:
+            self._generate_external_module_wrapper(ext_module)
 
         for arr_container in sys.arrays:
             if arr_container in self.sram_payload_arrays:
@@ -1024,7 +1163,8 @@ class CIRCTDumper(Visitor):  # pylint: disable=too-many-instance-attributes,too-
                         self.async_callees[callee].append(module)
 
         self.array_users = {}
-        for arr_container in self.sys.arrays:# pylint: disable=R1702
+        # pylint: disable=R1702
+        for arr_container in self.sys.arrays:
             if arr_container in self.sram_payload_arrays:
                 continue
             arr = arr_container
@@ -1037,17 +1177,23 @@ class CIRCTDumper(Visitor):  # pylint: disable=too-many-instance-attributes,too-
                         if mod not in self.array_users[arr]:
                             self.array_users[arr].append(mod)
 
+        # Process only non-external modules from sys.modules
         for elem in sys.modules:
+            if self._is_external_module(elem):
+                continue
+
             self.current_module = elem
             self.visit_module(elem)
         self.current_module = None
         for elem in sys.downstreams:
+            self.current_module = elem
             self.visit_module(elem)
+        self.current_module = None
         self.is_top_generation = True
         self._generate_top_harness()
         self.is_top_generation = False
 
-    # pylint:disable = too-many-statements
+    # pylint: disable=too-many-statements
     def visit_array(self, node: Array):
         """Generates a PyCDE Module to encapsulate an array and its write logic."""
         array = node
@@ -1123,7 +1269,46 @@ class CIRCTDumper(Visitor):  # pylint: disable=too-many-instance-attributes,too-
         self.append_code('')
 
 
-    def _generate_top_harness(self):# pylint: disable=too-many-locals,too-many-branches,too-many-statements
+    def _generate_external_module_wrapper(self, ext_module: ExternalSV):
+        """Generate a PyCDE wrapper class for an external module."""
+        class_name = namify(ext_module.name)
+        module_name = getattr(ext_module, 'external_module_name', class_name)
+
+        self.append_code(f'class {class_name}(Module):')
+        self.indent += 4
+
+        # Set the module name for PyCDE
+        self.append_code(f'module_name = f"{module_name}"')
+        if getattr(ext_module, 'has_clock', False):
+            self.append_code('clk = Clock()')
+        if getattr(ext_module, 'has_reset', False):
+            self.append_code('rst = Reset()')
+
+        # Check if the external module carries declared wires
+        if hasattr(ext_module, '_wires') and ext_module._wires:
+            # Handle wires with explicit directions
+            for wire_name, wire in ext_module._wires.items():
+                wire_type = dump_type(wire.dtype)
+                if wire.direction == 'input':
+                    self.append_code(f'{wire_name} = Input({wire_type})')
+                elif wire.direction == 'output':
+                    self.append_code(f'{wire_name} = Output({wire_type})')
+                else:
+                    # For undirected wires, default to Input (backward compatibility)
+                    self.append_code(f'{wire_name} = Input({wire_type})')
+        else:
+            # Fallback to handling ports for backward compatibility
+            for port in ext_module.ports:
+                port_name = namify(port.name)
+                port_type = dump_type(port.dtype)
+                # For external modules, default all ports to Input for backward compatibility
+                # Actual connections will be handled in the instantiation
+                self.append_code(f'{port_name} = Input({port_type})')
+
+        self.indent -= 4
+        self.append_code('')
+    # pylint: disable=too-many-locals,too-many-branches,too-many-statements
+    def _generate_top_harness(self):
         """
         Generates a generic Top-level harness that connects all modules based on
         the analyzed dependencies (async calls, array usage).
@@ -1178,6 +1363,8 @@ class CIRCTDumper(Visitor):  # pylint: disable=too-many-instance-attributes,too-
         # --- 1. Wire Declarations (Generic) ---
         self.append_code('# --- Wires for FIFOs, Triggers, and Arrays ---')
         for module in self.sys.modules:
+            if self._is_external_module(module):
+                continue
             for port in module.ports:
                 fifo_base_name = f'fifo_{namify(module.name)}_{namify(port.name)}'
                 self.append_code(f'# Wires for FIFO connected to {module.name}.{port.name}')
@@ -1190,6 +1377,8 @@ class CIRCTDumper(Visitor):  # pylint: disable=too-many-instance-attributes,too-
 
         # Wires for TriggerCounters (one per module)
         for module in self.sys.modules:
+            if self._is_external_module(module):
+                continue
             tc_base_name = f'{namify(module.name)}_trigger_counter'
             self.append_code(f'# Wires for {module.name}\'s TriggerCounter')
             self.append_code(f'{tc_base_name}_delta = Wire(Bits(8))')
@@ -1236,6 +1425,8 @@ class CIRCTDumper(Visitor):  # pylint: disable=too-many-instance-attributes,too-
 
         # Instantiate FIFOs
         for module in self.sys.modules:
+            if self._is_external_module(module):
+                continue
             for port in module.ports:
                 fifo_base_name = f'fifo_{namify(module.name)}_{namify(port.name)}'
                 self.append_code(
@@ -1256,6 +1447,8 @@ class CIRCTDumper(Visitor):  # pylint: disable=too-many-instance-attributes,too-
 
         # Instantiate TriggerCounters
         for module in self.sys.modules:
+            if self._is_external_module(module):
+                continue
             tc_base_name = f'{namify(module.name)}_trigger_counter'
             self.append_code(
                 f'{tc_base_name}_inst = TriggerCounter(WIDTH=8)'
@@ -1332,6 +1525,8 @@ class CIRCTDumper(Visitor):  # pylint: disable=too-many-instance-attributes,too-
         sorted_modules = topological_sort(all_modules, module_deps)
 
         for module in sorted_modules:
+            if self._is_external_module(module):
+                continue
             mod_name = namify(module.name)
             is_downstream = isinstance(module, Downstream)
             is_sram = isinstance(module, SRAM)
@@ -1397,12 +1592,24 @@ class CIRCTDumper(Visitor):  # pylint: disable=too-many-instance-attributes,too-
             unique_push_targets = {(p.fifo.module, p.fifo) for p in pushes}
             unique_call_targets = {c.bind.callee for c in calls}
 
+            # Filter out external modules from push targets
+            filtered_push_targets = set()
             for (callee_mod, callee_port) in unique_push_targets:
+                if not self._is_external_module(callee_mod):
+                    filtered_push_targets.add((callee_mod, callee_port))
+
+            # Filter out external modules from call targets
+            filtered_call_targets = set()
+            for callee_mod in unique_call_targets:
+                if not self._is_external_module(callee_mod):
+                    filtered_call_targets.add(callee_mod)
+
+            for (callee_mod, callee_port) in filtered_push_targets:
                 port_map.append(
                     f"fifo_{namify(callee_mod.name)}_{namify(callee_port.name)}_push_ready="
                     f"fifo_{namify(callee_mod.name)}_{namify(callee_port.name)}_push_ready"
                 )
-            for callee_mod in unique_call_targets:
+            for callee_mod in filtered_call_targets:
                 port_map.append(
                     f"{namify(callee_mod.name)}_trigger_counter_delta_ready="
                     f"{namify(callee_mod.name)}_trigger_counter_delta_ready"
@@ -1425,17 +1632,25 @@ class CIRCTDumper(Visitor):  # pylint: disable=too-many-instance-attributes,too-
                     f'mem_{array_name}_read_enable.assign(inst_{mod_name}.mem_read_enable)'
                     )
 
+            module_ports = getattr(module, 'ports', [])
+
             if not is_downstream:
                 self.append_code(
                     f"{mod_name}_trigger_counter_pop_ready.assign(inst_{mod_name}.executed)"
                     )
-                for port in module.ports:
+                for port in module_ports:
                     if any(isinstance(e, FIFOPop) and e.fifo == port \
                            for e in self._walk_expressions(module.body)):
                         self.append_code(
                             f"fifo_{mod_name}_{namify(port.name)}_pop_ready"
                             f".assign(inst_{mod_name}.{namify(port.name)}_pop_ready)"
                             )
+            else:
+                for port in module_ports:
+                    fifo_name = f"fifo_{mod_name}_{namify(port.name)}"
+                    self.append_code(
+                        f"{fifo_name}_pop_ready.assign(Bits(1)(1))"
+                    )
 
             for (callee_mod, callee_port) in unique_push_targets:
                 callee_mod_name = namify(callee_mod.name)
@@ -1473,7 +1688,9 @@ class CIRCTDumper(Visitor):  # pylint: disable=too-many-instance-attributes,too-
 
         # self.append_code('\n# --- Tie off unused FIFO push ports ---')
         for module in self.sys.modules:
-            for port in module.ports:
+            if self._is_external_module(module):
+                continue
+            for port in getattr(module, 'ports', []):
                 if port not in all_driven_fifo_ports:
                     fifo_base_name = f'fifo_{namify(module.name)}_{namify(port.name)}'
                     self.append_code(f'{fifo_base_name}_push_valid.assign(Bits(1)(0))')
@@ -1488,6 +1705,8 @@ class CIRCTDumper(Visitor):  # pylint: disable=too-many-instance-attributes,too-
 
         self.append_code('\n# --- Trigger Counter Delta Connections ---')
         for module in self.sys.modules:
+            if self._is_external_module(module):
+                continue
             mod_name = namify(module.name)
             if module in self.async_callees:
                 callers_of_this_module = self.async_callees[module]
@@ -1509,6 +1728,9 @@ class CIRCTDumper(Visitor):  # pylint: disable=too-many-instance-attributes,too-
         self.indent -= 8
         self.append_code('')
         self.append_code('system = System([Top], name="Top", output_directory="sv")')
+
+        # Copying of external SystemVerilog files occurs during elaboration.
+
         self.append_code('system.compile()')
 
     def _connect_array(self, arr):

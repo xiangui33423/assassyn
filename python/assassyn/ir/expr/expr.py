@@ -13,7 +13,7 @@ from ...utils import namify, identifierize
 
 if typing.TYPE_CHECKING:
     from ..array import Array
-    from ..module import Port, Module
+    from ..module import Port, Module, Wire
     from ..dtype import DType
     from ..block import Block, CondBlock
 
@@ -57,7 +57,7 @@ class Expr(Value):
         #pylint: disable=import-outside-toplevel
         from ..array import Array
         from ..const import Const
-        from ..module import Port
+        from ..module import Port, Wire
         from ..dtype import RecordValue
         self.opcode = opcode
         self.loc = self.parent = None
@@ -66,7 +66,7 @@ class Expr(Value):
         self._operands = []
         for i in operands:
             wrapped = i
-            if isinstance(i, (Array, Port)):
+            if isinstance(i, (Array, Port, Wire)):
                 i.users.append(self)
             elif isinstance(i, Expr):
                 wrapped = Operand(i, self)
@@ -105,7 +105,17 @@ class Expr(Value):
 
     def is_valued(self):
         '''If this operation has a return value'''
-        valued = (PureIntrinsic, FIFOPop, ArrayRead, Slice, Cast, Concat, Select, Select1Hot)
+        valued = (
+            PureIntrinsic,
+            FIFOPop,
+            ArrayRead,
+            Slice,
+            Cast,
+            Concat,
+            Select,
+            Select1Hot,
+            WireRead,
+        )
         other = isinstance(self, valued)
         return other or self.is_binary() or self.is_unary()
 
@@ -726,6 +736,60 @@ class Select1Hot(Expr):
         cond = self.cond.as_operand()
         values = ', '.join(i.as_operand() for i in self.values)
         return f'{lval} = select_1hot {cond} ({values})'
+
+class WireAssign(Expr):
+    '''The class for wire assignment operations'''
+
+    WIRE_ASSIGN = 1100
+
+    def __init__(self, wire, value):
+        super().__init__(WireAssign.WIRE_ASSIGN, [wire, value])
+
+    @property
+    def wire(self):
+        '''Get the wire being assigned to'''
+        return self._operands[0]
+
+    @property
+    def value(self):
+        '''Get the value being assigned'''
+        return self._operands[1]
+
+    def __repr__(self):
+        return f'{self.wire.as_operand()} = {self.value.as_operand()}'
+
+@ir_builder
+def wire_assign(wire, value):
+    '''Create a wire assignment expression'''
+    return WireAssign(wire, value)
+
+
+class WireRead(Expr):
+    '''The class for reading from an external wire.'''
+
+    WIRE_READ = 1101
+
+    def __init__(self, wire):
+        super().__init__(WireRead.WIRE_READ, [wire])
+
+    @property
+    def wire(self):
+        '''Return the wire being read.'''
+        return self._operands[0]
+
+    @property
+    def dtype(self):
+        '''The data type carried by the wire.'''
+        return getattr(self.wire, 'dtype', None)
+
+    def __repr__(self):
+        return f'{self.as_operand()} = {self.wire.as_operand()}'
+
+
+@ir_builder
+def wire_read(wire):
+    '''Create a wire read expression.'''
+    return WireRead(wire)
 
 def concat(*args: typing.List[Value]):
     """

@@ -1,6 +1,7 @@
 """Elaborate Assassyn IR to Verilog."""
 
 import os
+import re
 from pathlib import Path
 import shutil
 from .testbench import generate_testbench
@@ -9,10 +10,12 @@ from ...ir.module import SRAM
 from .utils import extract_sram_params
 
 from ...builder import SysBuilder
+from ...ir.module.external import ExternalSV
 
-from ...utils import create_and_clean_dir
+from ...utils import create_and_clean_dir, repo_path
 
-def generate_sram_blackbox_files(sys, path,resource_base):
+
+def generate_sram_blackbox_files(sys, path, resource_base=None):
     """Generate separate Verilog files for SRAM memory blackboxes."""
     sram_modules = [m for m in sys.downstreams if isinstance(m, SRAM)]
     for sram in sram_modules:
@@ -43,7 +46,7 @@ module sram_blackbox_{array_name} #(
 '''
 
         if sram_info['init_file']:
-            init_file =  sram_info['init_file']
+            init_file = sram_info['init_file']
             src_file = os.path.join(resource_base, init_file) if resource_base else init_file
             verilog_code += f'''
     initial begin
@@ -75,6 +78,7 @@ endmodule
             f.write(verilog_code)
 
 
+# pylint: disable=too-many-locals,too-many-branches
 def elaborate(sys: SysBuilder, **kwargs) -> str:
     """Elaborate the system into Verilog.
 
@@ -98,16 +102,43 @@ def elaborate(sys: SysBuilder, **kwargs) -> str:
 
     create_and_clean_dir(path)
 
+    external_sources = set()
+    for module in sys.modules:
+        if isinstance(module, ExternalSV) and getattr(module, 'file_path', None):
+            external_sources.add(module.file_path)
+
+    external_file_names = sorted({Path(file_name).name for file_name in external_sources})
+
     logs = generate_design(path / "design.py", sys)
 
+    files_to_copy = ["fifo.sv", "trigger_counter.sv"]
+    top_sv_path = path / "sv" / "hw" / "Top.sv"
+    alias_resource_files = []  # (base_file, alias_module)
 
-    generate_testbench(path / "tb.py", sys, kwargs['sim_threshold'], logs)
+    if top_sv_path.exists():
+        top_content = top_sv_path.read_text(encoding='utf-8')
+        for resource_file in files_to_copy:
+            base_module = Path(resource_file).stem
+            pattern = rf"\b{base_module}_(\d+)\b"
+            for suffix in set(re.findall(pattern, top_content)):
+                alias_module = f"{base_module}_{suffix}"
+                alias_resource_files.append((resource_file, alias_module))
 
+    additional_files = sorted(
+        set(external_file_names + [f"{alias}.sv" for _, alias in alias_resource_files])
+    )
+
+    generate_testbench(
+        path / "tb.py",
+        sys,
+        kwargs['sim_threshold'],
+        logs,
+        additional_files
+    )
 
     default_home = os.getenv('ASSASSYN_HOME', os.getcwd())
     resource_path = Path(default_home) / "python/assassyn/codegen/verilog"
-    generate_sram_blackbox_files(sys, path,kwargs.get('resource_base'))
-    files_to_copy = ["fifo.sv", "trigger_counter.sv"]
+    generate_sram_blackbox_files(sys, path, kwargs.get('resource_base'))
     for file_name in files_to_copy:
         source_file = resource_path / file_name
 
@@ -116,5 +147,32 @@ def elaborate(sys: SysBuilder, **kwargs) -> str:
             shutil.copy(source_file, destination_file)
         else:
             print(f"Warning: Resource file not found: {source_file}")
+
+    # Create alias resources when CIRCT renames parameterised modules (e.g., fifo_1)
+    for base_file, alias_module in alias_resource_files:
+        source_file = resource_path / base_file
+        if not source_file.is_file():
+            print(f"Warning: Cannot create alias for missing resource: {source_file}")
+            continue
+
+        alias_path = path / f"{alias_module}.sv"
+        if not alias_path.exists():
+            content = source_file.read_text(encoding='utf-8')
+            base_module = Path(base_file).stem
+            content = content.replace(f"module {base_module}", f"module {alias_module}", 1)
+            alias_path.write_text(content, encoding='utf-8')
+            print(f"Copied {source_file} to {alias_path}")
+
+    for file_name in external_sources:
+        src_path = Path(file_name)
+        if not src_path.is_absolute():
+            src_path = Path(repo_path()) / file_name
+
+        if src_path.is_file():
+            destination_file = path / src_path.name
+            shutil.copy(src_path, destination_file)
+            print(f"Copied {src_path} to {destination_file}")
+        else:
+            print(f"Warning: External resource file not found: {src_path}")
 
     return path
