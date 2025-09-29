@@ -57,8 +57,10 @@ class Expr(Value):
         #pylint: disable=import-outside-toplevel
         from ..array import Array
         from ..const import Const
-        from ..module import Port, Wire
+        from ..module import Port, Wire, Module
         from ..dtype import RecordValue
+        from ...builder import Singleton
+        from ..module.downstream import Downstream
         self.opcode = opcode
         self.loc = self.parent = None
         self.source_name = None
@@ -69,9 +71,23 @@ class Expr(Value):
             if isinstance(i, (Array, Port, Wire)):
                 i.users.append(self)
             elif isinstance(i, Expr):
-                wrapped = Operand(i, self)
-                i.users.append(wrapped)
+                if isinstance(i, Bind):
+                    wrapped = Operand(i, self)
+                    i.users.append(wrapped)
+                else:
+                    current_module = Singleton.builder.current_module
+                    expr_module = i.parent.module if i.parent else None
+                    if not isinstance(current_module, Downstream):
+                        assert current_module == expr_module, \
+                            f'Expression {i} is from module {expr_module}, \
+                            but current module is {current_module}'
+                    wrapped = Operand(i, self)
+                    i.users.append(wrapped)
             elif isinstance(i, (Const, str, RecordValue)):
+                wrapped = Operand(i, self)
+            elif isinstance(i, Module):
+                wrapped = Operand(i, self)
+            elif isinstance(i, Downstream):
                 wrapped = Operand(i, self)
             else:
                 assert False, f'{i} is a {type(i)}'
