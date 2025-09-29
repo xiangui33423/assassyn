@@ -19,7 +19,7 @@ cd $ASSASSYN_HOME/3rd-party/verilator
 git submodule update --init
 autoconf
 ./configure
-make -j
+make -j 
 
 if [ $? -ne 0 ]; then
   echo "Failed to configure Verilator build. Please check the configuration."

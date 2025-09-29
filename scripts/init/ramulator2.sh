@@ -33,8 +33,8 @@ fi
 
 mkdir -p build
 cd build
-cmake ..
-make -j
+cmake -DCMAKE_POLICY_VERSION_MINIMUM=3.5 ..
+make -j 
 
 if [ $? -ne 0 ]; then
   echo "Failed to build Ramulator2."

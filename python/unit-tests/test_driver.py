@@ -14,6 +14,7 @@ class Driver(Module):
         log('cnt: {}', cnt[0]);
 
 def check(raw):
+    print(raw)
     expected = 0
     for i in raw.split('\n'):
         if 'cnt:' in i:

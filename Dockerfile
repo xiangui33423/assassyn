@@ -1,6 +1,6 @@
 # Use the Rust image as the base
 FROM rust:1.82
-
+FROM ubuntu:22.04
 # Install system packages and set up Python symlink
 RUN apt-get update && apt-get install -y --no-install-recommends \
     zsh \

@@ -1,7 +1,7 @@
 # Install PyCDE
 
 # TODO: Later add a flag to force CIRCT installation via source
-pip install --user pycde --break-system-packages
+pip install pycde --break-system-packages 
 if [ $? -eq 0 ]; then
   echo "CIRCT installed successfully via pip."
   # Verify that PyCDE can be imported
@@ -23,7 +23,7 @@ cd $ASSASSYN_HOME/3rd-party/circt/frontends/PyCDE
 # Install the built package to local directory
 
 CIRCT_DIRECTORY="`pwd`/../../" CIRCT_EXTRA_CMAKE_ARGS="-DESI_RUNTIME=OFF -DZ3_DISABLE=ON -DOR_TOOLS_DISABLE=ON" python -m build
-pip install ./dist/*.whl
+pip install ./dist/*.whl --force-reinstall
 
 if [ $? -ne 0 ]; then
   echo "Failed to install PyCDE. Please check the installation output."

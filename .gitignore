@@ -7,5 +7,6 @@ examples/*/__pycache__/
 note/*
 testbench/simulator/ext
 testbench/simulator/build
-
+tutorials/*
+!tutorials/*.qmd
 **/.claude/settings.local.json

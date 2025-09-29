@@ -1,4 +1,4 @@
-pip install --user -r \
+pip install -r \
     $ASSASSYN_HOME/python/requirements.txt --break-system-packages
 
 if [ $? -ne 0 ]; then

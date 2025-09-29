@@ -1,0 +1,177 @@
+
+````yaml
+---
+title: "教程：使用 assassyn 和 Quarto 创建并验证一个简单的硬件计数器"
+author: "你的名字"
+date: "today"
+format: 
+  html:
+    toc: true # 显示目录
+    code-fold: true # 允许读者折叠代码块
+    code-tools: true # 提供复制代码等工具
+    self-contained: true # 将所有内容打包到单个HTML文件
+engine: jupyter # 或者 engine: knitr
+
+
+---
+
+# 1. 简介
+
+欢迎来到本教程！在这里，我们将学习如何使用 Python 硬件描述库 `assassyn` 来设计一个简单的 32 位计数器。
+
+**学习目标:**
+
+* 了解 `assassyn` 的基本组件：`Module`, `RegArray`, `UInt`。
+* 编写一个简单的硬件计数器模块。
+* 构建系统、执行仿真并使用 Verilator 进行验证。
+
+---
+
+# 2. 环境准备
+
+在开始之前，请确保您已经安装了以下软件和库：
+
+1.  **Quarto CLI**: 如果您还没有安装，请访问 [Quarto 官网](https://quarto.org/docs/get-started/)。
+2.  **Python**: 确保您的环境中已安装 Python (3.12)。
+3.  **assassyn 库**: 如果您还没有安装，请参考文档README.md
+
+---
+
+# 3. 核心代码讲解
+
+我们的项目由三部分组成：硬件模块定义、结果验证函数和主执行函数。
+
+## 3.1 硬件模块定义 (`Driver`)
+
+这是我们硬件设计的核心。我们定义一个名为 `Driver` 的模块，它内部包含一个32位的寄存器 `cnt`，并在每个时钟周期（组合逻辑的每次评估）自增1。
+
+```python
+# 这只是一个展示块，不可执行
+from assassyn.frontend import *
+from assassyn import utils
+
+class Driver(Module):
+    def __init__(self):
+        super().__init__(ports={})
+
+    @module.combinational
+    def build(self):
+        # 定义一个包含1个元素的数组，每个元素是32位无符号整数寄存器
+        cnt = RegArray(UInt(32), 1)
+        # 组合逻辑：下一个周期的 cnt[0] 的值是当前值 + 1
+        (cnt & self)[0] <= cnt[0] + UInt(32)(1)
+        # 在仿真时打印 cnt[0] 的当前值
+        log('cnt: {}', cnt[0]);
+```
+````
+  * `class Driver(Module)`: 所有硬件模块都继承自 `Module`。
+  * `RegArray(UInt(32), 1)`: 创建了一个寄存器数组。这里它只有一个元素，类型是32位无符号整数 (`UInt(32)`)。
+  * `(cnt & self)[0] <= ...`: 这是 `assassyn` 中更新寄存器值的语法，即时序逻辑的表达方式。它表示在下一个时钟沿，`cnt[0]` 的值将被更新为右侧表达式的结果。
+  * `log('cnt: {}', cnt[0])`: 这是一个仿真原语，它会在仿真过程中打印出 `cnt[0]` 的值，方便我们调试和验证。
+
+## 3.2 验证逻辑 (`check`)
+
+为了确保我们的计数器正常工作，我们编写了一个 `check` 函数。它会解析仿真器输出的文本，检查计数器的值是否从 0 开始正确地递增到了 99。
+
+```python
+# 这只是一个展示块，不可执行
+def check(raw):
+    expected = 0
+    for i in raw.split('\n'):
+        if 'cnt:' in i:
+            # 检查输出值是否和期望值相等
+            assert int(i.split()[-1]) == expected
+            expected += 1
+    # 最终检查是否数到了100个周期（0到99）
+    assert expected == 100, f'{expected} != 100'
+```
+
+## 3.3 系统构建与仿真 (`test_driver`)
+
+这个函数将所有部分串联起来：
+
+1.  用 `SysBuilder` 创建一个系统。
+2.  实例化我们的 `Driver` 模块。
+3.  调用 `elaborate` 将我们的 Python 设计转换成RTL模型。
+4.  调用 `run_simulator` 和 `run_verilator` 运行仿真。
+5.  将仿真输出传递给 `check` 函数进行验证。
+
+-----
+
+# 4\. 完整代码与执行
+
+
+```{python}
+#| echo: true
+#| cache: false
+
+import warnings
+warnings.filterwarnings("ignore")
+
+import sys
+import os
+lib_path = os.path.abspath(os.path.join(os.path.dirname("driver.pmd"), '../python/'))
+print(lib_path)
+sys.path.append(lib_path)
+from assassyn.frontend import *
+from assassyn.backend import elaborate
+from assassyn import utils
+# 定义硬件模块
+class Driver(Module):
+    def __init__(self):
+        super().__init__(ports={})
+
+    @module.combinational
+    def build(self):
+        cnt = RegArray(UInt(32), 1)
+        (cnt & self)[0] <= cnt[0] + UInt(32)(1)
+        log('cnt: {}', cnt[0]);
+
+# 定义验证函数
+def check(raw):
+    print(raw)
+    expected = 0
+    for i in raw.split('\n'):
+        if 'cnt:' in i:
+            assert int(i.split()[-1]) == expected
+            expected += 1
+    assert expected == 100, f'{expected} != 100'
+    print(f"✅ 验证成功！计数器从 0 数到了 {expected-1}。")
+
+
+def test_driver():
+    sys = SysBuilder('driver')
+    with sys:
+        driver = Driver()
+        driver.build()
+
+    print("--- 系统描述 ---")
+    print(sys)
+    print("------------------\n")
+
+    simulator_path, verilator_path = elaborate(sys, verilog=utils.has_verilator())
+
+    raw = utils.run_simulator(simulator_path)
+    check(raw)
+
+    if verilator_path:
+        raw = utils.run_verilator(verilator_path)
+        check(raw)
+
+if __name__ == '__main__':
+    test_driver()
+
+
+```
+
+## 4.1 结果分析
+
+当上面的代码块执行后，您应该能看到类似下面的输出：
+
+  * **系统描述**: `assassyn` 库打印出的模块结构。
+  * **仿真器输出**: 一系列 `cnt: 0`, `cnt: 1`, `cnt: 2`, ... 直到 `cnt: 9` 的日志。
+  * **验证结果**: 打印 "✅ 验证成功！" 的信息。
+
+如果所有步骤都正确，这意味着我们的硬件设计、仿真和验证都按预期工作了。
+
+-----
