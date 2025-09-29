@@ -1,7 +1,7 @@
 # Install PyCDE
 
 # TODO: Later add a flag to force CIRCT installation via source
-pip install pycde --break-system-packages 
+pip install pycde 
 if [ $? -eq 0 ]; then
   echo "CIRCT installed successfully via pip."
   # Verify that PyCDE can be imported
