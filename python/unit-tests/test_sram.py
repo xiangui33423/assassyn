@@ -2,6 +2,7 @@ import assassyn
 from assassyn.frontend import *
 from assassyn import backend
 from assassyn import utils
+from assassyn.ir.module.downstream import Downstream, combinational
 
 
 class MemUser(Module):

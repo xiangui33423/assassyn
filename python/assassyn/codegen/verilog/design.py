@@ -1,4 +1,5 @@
 # pylint: disable=C0302
+# pylint: disable=no-member
 """Verilog design generation and code dumping."""
 
 from typing import List, Dict, Tuple
@@ -568,35 +569,30 @@ class CIRCTDumper(Visitor):  # pylint: disable=too-many-instance-attributes,too-
                 self.expose('expr', expr.args[0])
             elif intrinsic == Intrinsic.WAIT_UNTIL:
                 cond = self.dump_rval(expr.args[0], False)
-                is_async_callee = self.current_module in self.async_callees
-
                 final_cond = cond
-                if is_async_callee:
-                    final_cond = f"({cond} & self.trigger_counter_pop_valid)"
-
                 self.wait_until = final_cond
             elif intrinsic == Intrinsic.BARRIER:
                 body = None
-            elif intrinsic == Intrinsic.MEM_WRITE:
-            # Create a temporary ArrayWrite to reuse existing logic
-                array = unwrap_operand(expr.operands[0])
-                idx = unwrap_operand(expr.operands[1])
-                val = unwrap_operand(expr.operands[2])
-                temp_write = ArrayWrite(array, idx, val)
-                temp_write.parent = expr.parent
-                self.expose('array', temp_write)
-                body = None
+            # elif intrinsic == Intrinsic.MEM_WRITE:
+            # # Create a temporary ArrayWrite to reuse existing logic
+            #     array = unwrap_operand(expr.operands[0])
+            #     idx = unwrap_operand(expr.operands[1])
+            #     val = unwrap_operand(expr.operands[2])
+            #     temp_write = ArrayWrite(array, idx, val)
+            #     temp_write.parent = expr.parent
+            #     self.expose('array', temp_write)
+            #     body = None
 
-            elif intrinsic == Intrinsic.MEM_READ:
-                # Create a temporary ArrayRead to reuse existing logic
-                array = unwrap_operand(expr.operands[0])
-                idx = unwrap_operand(expr.operands[1])
+            # elif intrinsic == Intrinsic.MEM_READ:
+            #     # Create a temporary ArrayRead to reuse existing logic
+            #     array = unwrap_operand(expr.operands[0])
+            #     idx = unwrap_operand(expr.operands[1])
 
-                temp_read = ArrayRead(array, idx)
-                temp_read.parent = expr.parent
-                temp_read.scalar_ty = array.scalar_ty
-                self.expose('array', temp_read)
-                body = None
+            #     temp_read = ArrayRead(array, idx)
+            #     temp_read.parent = expr.parent
+            #     temp_read.scalar_ty = array.scalar_ty
+            #     self.expose('array', temp_read)
+            #     body = None
 
             else:
                 raise ValueError(f"Unknown block intrinsic: {expr}")
@@ -1423,14 +1419,38 @@ class CIRCTDumper(Visitor):  # pylint: disable=too-many-instance-attributes,too-
         # --- 2. Hardware Instantiations (Generic) ---
         self.append_code('\n# --- Hardware Instantiations ---')
 
-        # Instantiate FIFOs
+        module_fifo_depths = {}
+        all_modules = [m for m in (self.sys.modules + self.sys.downstreams)
+                       if not self._is_external_module(m)]
+        default_fifo_depth = 2
+        for mod in all_modules:
+            module_fifo_depths[mod] = \
+                {port: default_fifo_depth for port in getattr(mod, 'ports', [])}
+
+        for module in self.sys.modules + self.sys.downstreams:
+            if not module.body:
+                continue
+            for expr in self._walk_expressions(module.body):
+                if isinstance(expr, FIFOPush):
+                    fifo_port = expr.fifo
+                    owner = fifo_port.module
+                    if owner not in module_fifo_depths:
+                        continue
+                    depth = getattr(expr, 'fifo_depth', None)
+                    if not isinstance(depth, int) or depth <= 0:
+                        depth = default_fifo_depth
+                    current = module_fifo_depths[owner].get(fifo_port, default_fifo_depth)
+                    module_fifo_depths[owner][fifo_port] = max(current, depth)
+
         for module in self.sys.modules:
             if self._is_external_module(module):
                 continue
+            depth_map = module_fifo_depths.get(module, {})
             for port in module.ports:
                 fifo_base_name = f'fifo_{namify(module.name)}_{namify(port.name)}'
+                depth = depth_map.get(port, default_fifo_depth)
                 self.append_code(
-                    f'{fifo_base_name}_inst = FIFO(WIDTH={port.dtype.bits}, DEPTH_LOG2=2)'
+                    f'{fifo_base_name}_inst = FIFO(WIDTH={port.dtype.bits}, DEPTH_LOG2={depth})'
                     f'(clk=self.clk, rst_n=~self.rst, push_valid={fifo_base_name}_push_valid, '
                     f'push_data={fifo_base_name}_push_data, pop_ready={fifo_base_name}_pop_ready)'
                 )

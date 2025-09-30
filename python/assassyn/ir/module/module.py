@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import typing
 from decorator import decorator
-
 from ...builder import Singleton, ir_builder
 from ..block import Block
 from ..dtype import DType
