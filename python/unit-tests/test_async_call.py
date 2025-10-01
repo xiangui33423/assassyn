@@ -42,14 +42,17 @@ class Driver(Module):
 
 def check_raw(raw):
     cnt = 0
+    # print(raw)
     for i in raw.split('\n'):
         if 'Adder:' in i:
             line_toks = i.split()
             c = line_toks[-1]
             a = line_toks[-3]
             b = line_toks[-5]
+            # print(a,b,c)
             assert int(a) + int(b) == int(c)
             cnt += 1
+    # print(cnt)
     assert cnt == 100, f'cnt: {cnt} != 100'
 
 
@@ -74,12 +77,14 @@ def test_async_call():
             random=True)
 
     simulator_path, verilator_path = elaborate(sys, **config)
-
+    print("simulator")
     raw = utils.run_simulator(simulator_path)
     check_raw(raw)
-
+    
     if verilator_path:
+        print("verialtor")
         raw = utils.run_verilator(verilator_path)
+        print(raw)
         check_raw(raw)
 
 
