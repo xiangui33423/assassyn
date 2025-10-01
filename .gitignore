@@ -11,3 +11,4 @@ tutorials/*
 !tutorials/*.qmd
 !tutorials/*.py
 **/.claude/settings.local.json
+
