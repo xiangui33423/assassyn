@@ -5,7 +5,17 @@ for binding arguments and making async calls.
 """
 
 from assassyn.ir.module import Module, Port
-from assassyn.ir.expr import Bind
+from assassyn.ir.value import Value
+from assassyn.builder import Singleton
+
+
+def this():
+    """Return the current module being built.
+
+    Returns:
+        The current Module object from Singleton.builder.current_module.
+    """
+    return Singleton.builder.current_module
 
 
 class Stage:
@@ -36,8 +46,6 @@ class Stage:
         Args:
             args: Either a tuple (positional args) or dict (named args)
         """
-        from assassyn.ir.value import Value
-
         # Convert single Value to tuple
         if isinstance(args, Value):
             args = (args,)
@@ -57,7 +65,10 @@ class Stage:
             unbound_ports = [name for name in all_port_names if name not in bound_port_names]
 
             if len(args) > len(unbound_ports):
-                raise ValueError(f"Too many arguments: {len(args)} provided but only {len(unbound_ports)} ports unbound")
+                raise ValueError(
+                    f"Too many arguments: {len(args)} provided "
+                    f"but only {len(unbound_ports)} ports unbound"
+                )
 
             # Map positional args to unbound ports
             kwargs = dict(zip(unbound_ports[:len(args)], args))
