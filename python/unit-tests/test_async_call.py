@@ -1,7 +1,5 @@
 from assassyn.frontend import *
-from assassyn.backend import elaborate
-from assassyn import utils
-import assassyn
+from assassyn.test import run_test
 
 class Adder(Module):
 
@@ -57,17 +55,14 @@ def check_raw(raw):
 
 
 def test_async_call():
-    # NOTE: The name of the system should be unique within all the testcases,
-    # because we currently have no locks to exclusively own a folder, under the
-    # context of multi-thread testing.
-    sys = SysBuilder('async_call')
-    with sys:
+    def top():
         adder = Adder()
         adder.build()
 
         driver = Driver()
-        call = driver.build(adder)
+        driver.build(adder)
 
+<<<<<<< HEAD
     print(sys)
 
     config = assassyn.backend.config(
@@ -86,6 +81,10 @@ def test_async_call():
         raw = utils.run_verilator(verilator_path)
         print(raw)
         check_raw(raw)
+=======
+    run_test('async_call', top, check_raw,
+             sim_threshold=200, idle_threshold=200, random=True)
+>>>>>>> cf47e3380af750db41b98c7b09cf4572cb36765b
 
 
 if __name__ == '__main__':
