@@ -9,6 +9,7 @@ import typing
 from ...ir.visitor import Visitor
 from ...ir.block import Block, CondBlock, CycledBlock
 from ...ir.dtype import RecordValue
+from ...ir.array import Slice
 from ...ir.expr import (
         Expr,
         BinaryOp,
@@ -17,7 +18,6 @@ from ...ir.expr import (
         ArrayWrite,
         Cast,
         Intrinsic,
-        PureIntrinsic,
         Bind,
         AsyncCall,
         FIFOPop,
@@ -25,9 +25,9 @@ from ...ir.expr import (
         Log,
         Select,
         Select1Hot,
-        Slice,
         Concat,
 )
+from ...ir.expr.intrinsic import PureIntrinsic
 from .utils import dtype_to_rust_type, fifo_name
 from ...utils import namify
 from .node_dumper import dump_rval_ref

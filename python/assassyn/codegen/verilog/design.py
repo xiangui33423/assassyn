@@ -22,7 +22,7 @@ from ...builder import SysBuilder
 from ...ir.visitor import Visitor
 from ...ir.block import Block, CondBlock,CycledBlock
 from ...ir.const import Const
-from ...ir.array import Array
+from ...ir.array import Array, Slice
 from ...ir.dtype import Int, Bits, Record,RecordValue
 from ...utils import namify, unwrap_operand
 from ...analysis import get_upstreams
@@ -35,9 +35,7 @@ from ...ir.expr import (
     ArrayRead,
     ArrayWrite,
     FIFOPush,
-    PureIntrinsic,
     AsyncCall,
-    Slice,
     Concat,
     Cast,
     Select,
@@ -47,6 +45,7 @@ from ...ir.expr import (
     WireAssign,
     WireRead
 )
+from ...ir.expr.intrinsic import PureIntrinsic
 
 
 class CIRCTDumper(Visitor):  # pylint: disable=too-many-instance-attributes,too-many-statements
