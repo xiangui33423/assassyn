@@ -86,7 +86,8 @@ def _codegen_send_read_request(node, module_ctx, sys, **_kwargs):
     return f"""{{
                     unsafe {{
                         let mem_interface = &sim.mem_interface;
-                        let success = mem_interface.send_request({idx_val} as i64, false, rust_callback, sim as *const _ as *mut _,);
+                        let success = mem_interface.send_request({idx_val} as i64,
+                            false, rust_callback, sim as *const _ as *mut _,);
                         if success {{
                             sim.request_stamp_map_table.insert({idx_val} as i64, sim.stamp);
                         }}
@@ -106,7 +107,8 @@ def _codegen_send_write_request(node, module_ctx, sys, **_kwargs):
                     let {val} = unsafe {{
                         if {we_val} {{
                             let mem_interface = &sim.mem_interface;
-                            let success = mem_interface.send_request({idx_val} as i64, true, rust_callback, sim as *const _ as *mut _,);
+                            let success = mem_interface.send_request({idx_val} as i64,
+                                true, rust_callback, sim as *const _ as *mut _,);
                             success
                         }} else {{
                             false
@@ -139,23 +141,32 @@ def _codegen_mem_resp(node, module_ctx, sys, **_kwargs):
         return f"let {val} = 0"
     return f"let {val} = sim.{mem_rdata}.payload.front().unwrap().clone()"
 
-
-def _codegen_mem_write(node, module_ctx, sys):
+def _codegen_mem_write(node, module_ctx, sys, **kwargs):
     """Generate code for MEM_WRITE intrinsic."""
+    # pylint: disable=import-outside-toplevel
+    from ..port_mapper import get_port_manager
+
     module_name = module_ctx.name
+    modules_for_callback = kwargs.get('modules_for_callback')
     array = node.args[0]
     idx = node.args[1]
     value = node.args[2]
     array_name = namify(array.name)
     idx_val = dump_rval_ref(module_ctx, sys, idx)
     value_val = dump_rval_ref(module_ctx, sys, value)
-    port_id = id("DRAM")
+    modules_for_callback["memory"] = module_name
+    modules_for_callback["store"] = array_name
+
+    # DRAM callback uses a reserved port
+    manager = get_port_manager()
+    port_idx = manager.get_or_assign_port(array_name, "DRAM_CALLBACK")
+
     return f"""{{
                     let stamp = sim.stamp - sim.stamp % 100 + 50;
-                    sim.{array_name}.write_port.push(
-                        ArrayWrite::new(stamp, {idx_val} as usize, {value_val}.clone(), "{module_name}", {port_id}));
+                    let write = ArrayWrite::new(stamp, {idx_val} as usize,
+                                               {value_val}.clone(), "{module_name}");
+                    sim.{array_name}.write({port_idx}, write);
                 }}"""
-
 
 # Dispatch table for intrinsic operations
 _INTRINSIC_DISPATCH = {
@@ -172,7 +183,7 @@ _INTRINSIC_DISPATCH = {
 }
 
 
-def codegen_intrinsic(node: Intrinsic, module_ctx, sys):
+def codegen_intrinsic(node: Intrinsic, module_ctx, sys, **kwargs):
     """Generate code for intrinsic operations."""
     intrinsic = node.opcode
     codegen_func = _INTRINSIC_DISPATCH.get(intrinsic)
@@ -181,5 +192,6 @@ def codegen_intrinsic(node: Intrinsic, module_ctx, sys):
             node,
             module_ctx,
             sys,
+            **kwargs
         )
     return None

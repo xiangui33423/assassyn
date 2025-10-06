@@ -11,6 +11,7 @@ from ...ir.block import CycledBlock
 from ...ir.expr import Expr,Bind
 from ...ir.module import Downstream, Module, SRAM
 from ...utils import namify, repo_path
+from .port_mapper import get_port_manager
 
 
 def dynamiclib_suffix():
@@ -26,6 +27,49 @@ def dynamiclib_suffix():
         return ".dylib"
     # Linux and other Unix-like systems
     return ".so"
+
+
+def analyze_and_register_ports(sys):
+    """Analyze system and register all array write ports.
+
+    This function scans the entire system to find all array writes and
+    registers them with the port manager, ensuring each writer gets a unique
+    port index for compile-time port allocation.
+
+    Args:
+        sys: The Assassyn system builder
+
+    Returns:
+        The port manager with all ports registered
+    """
+    # pylint: disable=import-outside-toplevel
+    from ...ir.expr.array import ArrayWrite
+    from ...ir.expr.intrinsic import Intrinsic
+    from ...ir.visitor import Visitor
+
+    manager = get_port_manager()
+
+    class PortRegistrationVisitor(Visitor):
+        """Visitor that registers array write ports."""
+
+        def visit_expr(self, node):
+            """Visit an expression and register array writes."""
+            if isinstance(node, ArrayWrite):
+                array_name = namify(node.array.name)
+                writer_name = namify(node.module.name)
+                manager.get_or_assign_port(array_name, writer_name)
+
+            # Check for DRAM writes (MEM_WRITE intrinsic)
+            elif isinstance(node, Intrinsic) and node.opcode == Intrinsic.MEM_WRITE:
+                array = node.args[0]
+                array_name = namify(array.name)
+                # DRAM callback gets its own port
+                manager.get_or_assign_port(array_name, "DRAM_CALLBACK")
+
+    visitor = PortRegistrationVisitor()
+    visitor.visit_system(sys)
+
+    return manager
 
 
 def dump_simulator( #pylint: disable=too-many-locals, too-many-branches, too-many-statements
@@ -44,6 +88,10 @@ def dump_simulator( #pylint: disable=too-many-locals, too-many-branches, too-man
             - fifo_depth: Default FIFO depth
         fd: File descriptor to write to
     """
+    # First, analyze the system to determine port requirements
+    # This registers all array write ports with the global port manager
+    analyze_and_register_ports(sys)
+
     # Write imports
     fd.write("use sim_runtime::*;\n")
     fd.write("use std::collections::VecDeque;\n")
@@ -69,19 +117,24 @@ def dump_simulator( #pylint: disable=too-many-locals, too-many-branches, too-man
     fd.write("pub request_stamp_map_table: HashMap<i64, usize>,\n")
     home = repo_path()
     # Add array fields to simulator struct
+    port_manager = get_port_manager()
     for array in sys.arrays:
         name = namify(array.name)
         dtype = dtype_to_rust_type(array.scalar_ty)
+        num_ports = port_manager.get_port_count(name)
+
         fd.write(f"pub {name} : Array<{dtype}>, ")
-        # Handle array initialization
+        # Handle array initialization with pre-allocated ports
         if array.initializer:
             init_values = []
             for x in array.initializer:
                 init_values.append(int_imm_dumper_impl(array.scalar_ty, x))
             init_str = ", ".join(init_values)
-            simulator_init.append(f"{name} : Array::new_with_init(vec![{init_str}]),")
+            simulator_init.append(
+                f"{name} : Array::new_with_init_and_ports(vec![{init_str}], {num_ports}),"
+            )
         else:
-            simulator_init.append(f"{name} : Array::new({array.size}),")
+            simulator_init.append(f"{name} : Array::new_with_ports({array.size}, {num_ports}),")
         registers.append(name)
 
     # Track expressions with external visibility

@@ -26,20 +26,34 @@ pub struct ArrayWrite<T: Sized + Default + Clone> {
   addr: usize,
   data: T,
   pusher: &'static str,
-  port_id: usize, // Unique identifier for the write port
 }
 
 pub struct Array<T: Sized + Default + Clone> {
   pub payload: Vec<T>,
-  pub write_port: PortXEQ<T>,
+  write_ports: Vec<XEQ<ArrayWrite<T>>>,
 }
 ````
 
 `ArrayWrite` is used to model register array writes.
-Each register file can have multiple different ports,
-differentiated by the `port_id`.
+Each register file can have multiple different write ports managed through a `Vec`,
+where the index is the port ID and the value is an XEQ for that port.
 
-- `tick` commits all the pending writes to the register array payload.
+### Port ID Assignment
+
+Port IDs are assigned at **compile time** using sequential integers for optimal performance:
+- The Python code generator analyzes the system during elaboration
+- Each module writing to an array gets a unique port index
+- Port IDs are small, predictable, sequential integers
+- Pre-allocated Vec provides direct O(1) indexing
+
+### Runtime Behavior
+
+- The `new_with_ports` and `new_with_init_and_ports` constructors pre-allocate the exact number of ports needed
+- The `write` method uses direct Vec indexing with the compile-time assigned port ID
+- For backwards compatibility, ports can still be created on-demand if needed
+- `tick` commits all pending writes from all ports to the register array payload
+- When multiple writes to the same address occur in the same cycle (from different ports),
+  the last write wins
 
 ## XEQ
 
