@@ -1,6 +1,6 @@
 """System-level code generation utilities."""
 
-from ...ir.module import SRAM
+from ...ir.memory.sram import SRAM
 from ...ir.expr import AsyncCall, ArrayRead, ArrayWrite
 from ...analysis import get_upstreams
 
@@ -16,8 +16,8 @@ def generate_system(dumper, node):
     sys = node
     dumper.sys = sys
     for module in sys.downstreams:
-        if isinstance(module, SRAM) and hasattr(module, 'payload'):
-            dumper.sram_payload_arrays.add(module.payload)
+        if isinstance(module, SRAM) and hasattr(module, '_payload'):
+            dumper.sram_payload_arrays.add(module._payload)
 
     # Collect external modules
     dumper.external_modules = []
