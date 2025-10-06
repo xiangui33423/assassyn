@@ -13,28 +13,23 @@ from ...ir.expr import Expr
 from ...utils import namify
 from .node_dumper import dump_rval_ref
 from ...analysis import expr_externally_used
+from .callback_collector import collect_callback_intrinsics, CallbackMetadata
 
 if typing.TYPE_CHECKING:
     from ...ir.module import Module
+    from ...builder import SysBuilder
 
 class ElaborateModule(Visitor):
     """Visitor for elaborating modules with multi-port write support."""
 
-    def __init__(self, sys):
+    def __init__(self, sys, callback_metadata: CallbackMetadata | None = None):
         """Initialize the module elaborator."""
         super().__init__()
         self.sys = sys
         self.indent = 0
         self.module_name = ""
         self.module_ctx = None
-        self.modules_for_callback = {}
-
-    def visit_module_for_callback(self, node: Module):
-        """Visit a module to collect module names for callback."""
-        self.module_name = node.name
-        self.module_ctx = node
-        self.visit_block(node.body)
-        return self.modules_for_callback
+        self.callback_metadata = callback_metadata
 
     def visit_module(self, node: Module):
         """Visit a module and generate its implementation."""
@@ -71,8 +66,7 @@ class ElaborateModule(Visitor):
             id_and_exposure = (id_expr, need_exposure)
 
         # Generate code using the codegen_expr helper
-        code = codegen_expr(node, self.module_ctx, self.sys, self.module_name,
-                           self.modules_for_callback)
+        code = codegen_expr(node, self.module_ctx, self.sys)
 
         # Format the result with proper indentation and variable assignment
         indent_str = " " * self.indent
@@ -137,3 +131,50 @@ class ElaborateModule(Visitor):
             result.append(f"{' ' * self.indent}}}\n")
 
         return "".join(result)
+
+
+def dump_modules(sys: SysBuilder, fd):
+    """Generate the modules.rs file.
+
+    This matches the Rust function in src/backend/simulator/elaborate.rs
+    """
+    # Add imports
+    fd.write("""
+use sim_runtime::*;
+use super::simulator::Simulator;
+use std::collections::VecDeque;
+use sim_runtime::num_bigint::{BigInt, BigUint};
+use sim_runtime::libloading::{Library, Symbol};
+use std::ffi::{CString, c_char, c_float, c_longlong, c_void};
+use std::sync::Arc;""")
+
+    # Generate each module's implementation
+    callback_metadata = collect_callback_intrinsics(sys)
+    em = ElaborateModule(sys, callback_metadata)
+    if (
+        callback_metadata.memory
+        and callback_metadata.store
+        and callback_metadata.mem_user_rdata
+    ):
+        fd.write(f"""
+    extern "C" fn rust_callback(req: *mut Request, ctx: *mut c_void) {{
+        unsafe {{
+            let req = &*req;
+            let sim: &mut Simulator = &mut *(ctx as *mut Simulator);
+            let cycles = (req.depart - req.arrive) as usize;
+            let stamp = sim.request_stamp_map_table
+                .remove(&req.addr)
+                .unwrap_or_else(|| sim.stamp);
+            sim.{callback_metadata.mem_user_rdata}.push.push(FIFOPush::new(
+                stamp + 100 * cycles,
+                sim.{callback_metadata.store}.payload[req.addr as usize].clone().try_into().unwrap(),
+                "{callback_metadata.memory}",
+            ));
+        }}
+    }}""")
+    for module in sys.modules[:] + sys.downstreams[:]:
+        # Then, second time dump for real visit modules
+        module_code = em.visit_module(module)
+        fd.write(module_code)
+
+    return True

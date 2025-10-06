@@ -7,60 +7,12 @@ import shutil
 import subprocess
 import typing
 from pathlib import Path
-from .modules import ElaborateModule
-from .simulator import dump_simulator, dump_main
+from .modules import dump_modules
+from .simulator import dump_simulator
 from ...utils import repo_path
 
 if typing.TYPE_CHECKING:
     from ...builder import SysBuilder
-
-
-def dump_modules(sys: SysBuilder, fd):
-    """Generate the modules.rs file.
-
-    This matches the Rust function in src/backend/simulator/elaborate.rs
-    """
-    # Add imports
-    fd.write("""
-use sim_runtime::*;
-use super::simulator::Simulator;
-use std::collections::VecDeque;
-use sim_runtime::num_bigint::{BigInt, BigUint};
-use sim_runtime::libloading::{Library, Symbol};
-use std::ffi::{CString, c_char, c_float, c_longlong, c_void};
-use std::sync::Arc;
-    """)
-
-    # Generate each module's implementation
-    dict_modules_callback = {}
-    em = ElaborateModule(sys)
-    for module in sys.modules[:] + sys.downstreams[:]:
-        dict_modules_callback = em.visit_module_for_callback(module)
-    required_keys = ["memory", "store", "MemUser_rdata"]
-    if all(dict_modules_callback.get(k) is not None for k in required_keys):
-        fd.write(f"""
-    extern "C" fn rust_callback(req: *mut Request, ctx: *mut c_void) {{
-        unsafe {{
-            let req = &*req;
-            let sim: &mut Simulator = &mut *(ctx as *mut Simulator);
-            let cycles = (req.depart - req.arrive) as usize;
-            let stamp = sim.request_stamp_map_table
-                .remove(&req.addr)
-                .unwrap_or_else(|| sim.stamp);;
-            sim.{dict_modules_callback.get("MemUser_rdata")}.push.push(FIFOPush::new(
-                stamp + 100 * cycles,
-                sim.{dict_modules_callback.
-                     get("store")}.payload[req.addr as usize].clone().try_into().unwrap(),
-                "{dict_modules_callback.get("memory")}",
-            ));
-        }}
-    }}""")
-    for module in sys.modules[:] + sys.downstreams[:]:
-        # Then, second time dump for real visit modules
-        module_code = em.visit_module(module)
-        fd.write(module_code)
-
-    return True
 
 
 def elaborate_impl(sys, config):
@@ -93,17 +45,8 @@ def elaborate_impl(sys, config):
         cargo.write('[dependencies]\n')
         cargo.write(f'sim-runtime = {{ path = "{runtime_path}" }}\n')
 
-    # Create rustfmt.toml if available
-    rustfmt_src = None
-    rustfmt_candidates = [simulator_path / "rustfmt.toml", Path(repo_path()) / "rustfmt.toml"]
-
-    for candidate in rustfmt_candidates:
-        if candidate.exists():
-            rustfmt_src = candidate
-            break
-
-    if rustfmt_src:
-        shutil.copy(rustfmt_src, simulator_path / "rustfmt.toml")
+    # Create rustfmt for the generated project
+    shutil.copy(Path(repo_path()) / "rustfmt.toml", simulator_path / "rustfmt.toml")
 
     # Generate modules.rs
     with open(simulator_path / "src/modules.rs", 'w', encoding="utf-8") as fd:
@@ -114,8 +57,8 @@ def elaborate_impl(sys, config):
         dump_simulator(sys, config, fd)
 
     # Generate main.rs
-    with open(simulator_path / "src/main.rs", 'w', encoding='utf-8') as fd:
-        dump_main(fd)
+    template_main = Path(__file__).resolve().parent / "template" / "main.rs"
+    shutil.copy(template_main, simulator_path / "src/main.rs")
 
     return manifest_path
 

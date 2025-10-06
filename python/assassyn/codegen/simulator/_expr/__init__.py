@@ -30,8 +30,9 @@ from .intrinsics import codegen_intrinsic, codegen_pure_intrinsic
 from .call import codegen_async_call, codegen_fifo_pop, codegen_fifo_push, codegen_bind
 
 
-def codegen_log(node: Log, module_ctx, sys, module_name):
+def codegen_log(node: Log, module_ctx, sys):
     """Generate code for log operations."""
+    module_name = module_ctx.name
     result = [f'print!("@line:{{:<5}} {{:<10}}: [{module_name}]\\t", line!(), cyclize(sim.stamp));']
     result.append("println!(")
     result.append(f"{dump_rval_ref(module_ctx, sys, node.operands[0])}, ")
@@ -123,56 +124,26 @@ def codegen_cast(node: Cast, module_ctx, sys):
 
 # Dispatch table mapping expression types to their codegen functions
 _EXPR_CODEGEN_DISPATCH = {
-    BinaryOp: lambda node, module_ctx, sys, _module_name, _modules_for_callback: (
-        codegen_binary_op(node, module_ctx, sys)
-    ),
-    UnaryOp: lambda node, module_ctx, sys, _module_name, _modules_for_callback: (
-        codegen_unary_op(node, module_ctx, sys)
-    ),
-    ArrayRead: lambda node, module_ctx, sys, _module_name, _modules_for_callback: (
-        codegen_array_read(node, module_ctx, sys)
-    ),
-    ArrayWrite: lambda node, module_ctx, sys, module_name, _modules_for_callback: (
-        codegen_array_write(node, module_ctx, sys, module_name)
-    ),
-    AsyncCall: lambda node, module_ctx, sys, _module_name, _modules_for_callback: (
-        codegen_async_call(node, module_ctx, sys)
-    ),
-    FIFOPop: lambda node, module_ctx, sys, module_name, _modules_for_callback: (
-        codegen_fifo_pop(node, module_ctx, sys, module_name)
-    ),
-    PureIntrinsic: lambda node, module_ctx, sys, _module_name, _modules_for_callback: (
-        codegen_pure_intrinsic(node, module_ctx, sys)
-    ),
-    FIFOPush: lambda node, module_ctx, sys, module_name, _modules_for_callback: (
-        codegen_fifo_push(node, module_ctx, sys, module_name)
-    ),
-    Log: lambda node, module_ctx, sys, module_name, _modules_for_callback: (
-        codegen_log(node, module_ctx, sys, module_name)
-    ),
-    Slice: lambda node, module_ctx, sys, _module_name, _modules_for_callback: (
-        codegen_slice(node, module_ctx, sys)
-    ),
-    Concat: lambda node, module_ctx, sys, _module_name, _modules_for_callback: (
-        codegen_concat(node, module_ctx, sys)
-    ),
-    Select: lambda node, module_ctx, sys, _module_name, _modules_for_callback: (
-        codegen_select(node, module_ctx, sys)
-    ),
-    Select1Hot: lambda node, module_ctx, sys, _module_name, _modules_for_callback: (
-        codegen_select1hot(node, module_ctx, sys)
-    ),
-    Cast: lambda node, module_ctx, sys, _module_name, _modules_for_callback: (
-        codegen_cast(node, module_ctx, sys)
-    ),
-    Bind: lambda node, module_ctx, sys, _module_name, _modules_for_callback: (
-        codegen_bind(node, module_ctx, sys)
-    ),
+    BinaryOp: codegen_binary_op,
+    UnaryOp: codegen_unary_op,
+    ArrayRead: codegen_array_read,
+    ArrayWrite: codegen_array_write,
+    AsyncCall: codegen_async_call,
+    FIFOPop: codegen_fifo_pop,
+    PureIntrinsic: codegen_pure_intrinsic,
+    FIFOPush: codegen_fifo_push,
+    Log: codegen_log,
+    Slice: codegen_slice,
+    Concat: codegen_concat,
+    Select: codegen_select,
+    Select1Hot: codegen_select1hot,
+    Cast: codegen_cast,
+    Bind: codegen_bind,
     Intrinsic: codegen_intrinsic,
 }
 
 
-def codegen_expr(node, module_ctx, sys, module_name, modules_for_callback):
+def codegen_expr(node, module_ctx, sys):
     """Generate code for an expression node.
 
     This is the main dispatcher function that delegates to specific codegen functions
@@ -183,11 +154,11 @@ def codegen_expr(node, module_ctx, sys, module_name, modules_for_callback):
     # Try exact match first
     codegen_func = _EXPR_CODEGEN_DISPATCH.get(node_type)
     if codegen_func is not None:
-        return codegen_func(node, module_ctx, sys, module_name, modules_for_callback)
+        return codegen_func(node, module_ctx, sys)
 
     # Fall back to isinstance check for subclasses
     for base_type, func in _EXPR_CODEGEN_DISPATCH.items():
         if isinstance(node, base_type):
-            return func(node, module_ctx, sys, module_name, modules_for_callback)
+            return func(node, module_ctx, sys)
 
     return None
