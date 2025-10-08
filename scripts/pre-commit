@@ -3,34 +3,21 @@
 # It is highly recommended to put this to your git pre-commit hook, to format your code
 # before checking anything in.
 
+# Run Rust linting (fmt and clippy)
+echo "Running Rust linting..."
+make rust-lint
+if [ $? -ne 0 ]; then
+    echo "Error: Rust linting failed. Please fix the issues above."
+    exit 1
+fi
+
+# Run Python linting
+echo "Running Python linting..."
+make pylint
+if [ $? -ne 0 ]; then
+    echo "Error: Python linting failed. Please fix the issues above."
+    exit 1
+fi
+
 # Ensure ramulator2 and wrapper are built
-source $ASSASSYN_HOME/scripts/init/wrapper.sh
-if [ $? -ne 0 ]; then
-    echo "Ramulator2 and wrapper build failed, please fix the issues before committing."
-    exit 1
-fi
-
-# Test Rust wrapper for platform independence
-cd $ASSASSYN_HOME/tools/rust-sim-runtime
-cargo test
-if [ $? -ne 0 ]; then
-    echo "Rust wrapper tests failed, please fix the issues before committing."
-    exit 1
-fi
-cd $ASSASSYN_HOME
-
-pylint --rcfile $ASSASSYN_HOME/python/.pylintrc $ASSASSYN_HOME/python/assassyn
-if [ $? -ne 0 ]; then
-    echo "Pylint failed, please fix the issues before committing."
-    exit 1
-fi
-pytest -n 8 -x $ASSASSYN_HOME/python/ci-tests
-if [ $? -ne 0 ]; then
-    echo "Tests failed, please fix the issues before committing."
-    exit 1
-fi
-pytest -n 8 -x $ASSASSYN_HOME/python/unit-tests
-if [ $? -ne 0 ]; then
-    echo "Unit tests failed, please fix the issues before committing."
-    exit 1
-fi
+make test-all
