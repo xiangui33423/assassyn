@@ -18,8 +18,15 @@ pub struct Request {
   pub m_payload: *mut c_void,
 }
 
+#[repr(C)]
+pub struct Response {
+  pub valid: bool,
+  pub addr: usize,
+  pub data: *mut c_void, // Using pointer instead of BigUInt for C compatibility
+}
 type MyWrapper = *mut c_void;
 type RequestCallback = extern "C" fn(*mut Request, *mut c_void);
+type ResponseCallback = extern "C" fn(*mut Response, *mut c_void);
 
 pub struct MemoryInterface {
   lib: Library,
