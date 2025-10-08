@@ -1,7 +1,7 @@
 echo "Building Wrapper..."
 RESTORE="$(pwd)"
-mkdir -p "$ASSASSYN_HOME/testbench/simulator"
-cd "$ASSASSYN_HOME/testbench/simulator"
+mkdir -p "$ASSASSYN_HOME/tools/c-ramulator2-wrapper"
+cd "$ASSASSYN_HOME/tools/c-ramulator2-wrapper"
 mkdir -p build
 cd build
 cmake ..

@@ -1,5 +1,5 @@
-#ifndef MYWRAPPER_H
-#define MYWRAPPER_H
+#ifndef CRAMUALATOR2WRAPPER_H
+#define CRAMUALATOR2WRAPPER_H
 
 #include "base/base.h"
 #include "base/config.h"
@@ -9,11 +9,11 @@
 #include <deque>
 #include <unordered_map>
 
-class MyWrapper {
+class CRamualator2Wrapper {
 
 public:
-  MyWrapper() = default;
-  ~MyWrapper();
+  CRamualator2Wrapper() = default;
+  ~CRamualator2Wrapper();
   void init(const std::string &config_path);
   float get_memory_tCK() const;
   bool send_request(int64_t addr, bool is_write,
@@ -27,4 +27,4 @@ public:
   Ramulator::IMemorySystem *ramulator2_memorysystem;
 };
 
-#endif // MYWRAPPER_H
+#endif // CRAMUALATOR2WRAPPER_H

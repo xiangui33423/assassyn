@@ -10,6 +10,15 @@ if [ $? -ne 0 ]; then
     exit 1
 fi
 
+# Test Rust wrapper for platform independence
+cd $ASSASSYN_HOME/tools/rust-sim-runtime
+cargo test
+if [ $? -ne 0 ]; then
+    echo "Rust wrapper tests failed, please fix the issues before committing."
+    exit 1
+fi
+cd $ASSASSYN_HOME
+
 pylint --rcfile $ASSASSYN_HOME/python/.pylintrc $ASSASSYN_HOME/python/assassyn
 if [ $? -ne 0 ]; then
     echo "Pylint failed, please fix the issues before committing."
@@ -18,5 +27,10 @@ fi
 pytest -n 8 -x $ASSASSYN_HOME/python/ci-tests
 if [ $? -ne 0 ]; then
     echo "Tests failed, please fix the issues before committing."
+    exit 1
+fi
+pytest -n 8 -x $ASSASSYN_HOME/python/unit-tests
+if [ $? -ne 0 ]; then
+    echo "Unit tests failed, please fix the issues before committing."
     exit 1
 fi

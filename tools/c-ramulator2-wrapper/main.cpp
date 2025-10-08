@@ -1,4 +1,4 @@
-#include "MyWrapper.h"
+#include "CRamualator2Wrapper.h"
 #include <iostream>
 #include <vector>
 #include <algorithm> // for std::shuffle
@@ -6,7 +6,7 @@
 
 //This file is just for test
 int main() {
-    MyWrapper wrapper;
+    CRamualator2Wrapper wrapper;
 
     std::string config_path = "../../configs/example_config.yaml";;  // Adjust to your config path
     wrapper.init(config_path);

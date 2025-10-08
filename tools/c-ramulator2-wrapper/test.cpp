@@ -1,4 +1,4 @@
-#include "MyWrapper.h"
+#include "CRamualator2Wrapper.h"
 #include <iostream>
 #include <vector>
 #include <algorithm>
@@ -6,7 +6,7 @@
 
 // This file should output the same result as the assassyn/python/ci-tests/test_dram.py
 int main() {
-    MyWrapper wrapper;
+    CRamualator2Wrapper wrapper;
 
     std::string config_path = "../../configs/example_config.yaml";;  // Adjust to your config path
     wrapper.init(config_path);

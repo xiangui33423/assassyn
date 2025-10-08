@@ -72,8 +72,8 @@ jobs:
         id: cache-wrapper
         uses: actions/cache@v4
         with:   
-          path: ${{ github.workspace }}/testbench/simulator/build
-          key: ${{ runner.os }}-wrapper-${{ hashFiles('testbench/simulator/.git/HEAD') }}
+          path: ${{ github.workspace }}/tools/c-ramulator2-wrapper/build
+          key: ${{ runner.os }}-wrapper-${{ hashFiles('tools/c-ramulator2-wrapper/.git/HEAD') }}
           restore-keys: |
             ${{ runner.os }}-wrapper-
       - name: Build and Install wrapper in Container #if cache miss
@@ -84,6 +84,12 @@ jobs:
       - name: Run Python Lint
         run:
           ${{ env.ASSASSYN_DOCKER }} /bin/zsh -c "python -m pylint --rcfile python/.pylintrc python/assassyn"
+      - name: Rust Wrapper Tests
+        run: |
+          ${{ env.ASSASSYN_DOCKER }} /bin/zsh -c "source setup.sh && cd tools/rust-sim-runtime && cargo test"
+      - name: Python Unit Tests
+        run: |
+          ${{ env.ASSASSYN_DOCKER }} /bin/zsh -c "source setup.sh && python -m pytest -n 8 python/unit-tests"
       - name: Python Frontend Unit Tests
         run: |
           ${{ env.ASSASSYN_DOCKER }} /bin/zsh -c "source setup.sh && source scripts/init/py-package.sh && source scripts/init/circt.sh && python -m pytest -n 8 python/ci-tests"

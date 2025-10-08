@@ -23,7 +23,7 @@ and improvements as described in the action items. Faithfully use `git commit` w
 ## 4. Checklist & Summary
 
 After all action items are down, a summary checklist should be appended after the `TODO-xxx.md` file.
-Then, move `TODO-xxx.md` to `dones/DONE-xxx.md` where `xxx` is the same as `TODO-xxx`.
+After that, move `TODO-xxx.md` to `dones/DONE-xxx.md` where `xxx` is the same as `TODO-xxx`.
   - If `dones` folder does not exist, create it.
 
 The summary should include two parts:
@@ -33,7 +33,8 @@ The summary should include two parts:
    - Bugs fixed
    - Improvements made
    - Any other relevant information
-   - If it is a immersive refactor, present a simple before-after code snippet.
+   - If an interface refactor happens more than 3 times, present a re-presentative simple before-after code snippet.
+      - No need to present code snippets in other cases.
 3. Summarize the non-obvious technical decisions made during the implementation. This includes but is not limited to:
    - For example, if it is a short-term hack, explain this hack and suggest a fundamental solution.
    - If a workaround for a bug in test case before this TODO, explain it and suggest a fundamental solution.

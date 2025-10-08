@@ -5,8 +5,7 @@ examples/*/__pycache__/
 /.vscode
 *.log
 note/*
-testbench/simulator/ext
-testbench/simulator/build
+tools/c-ramulator2-wrapper/build
 tutorials/*
 !tutorials/*.qmd
 !tutorials/*.py

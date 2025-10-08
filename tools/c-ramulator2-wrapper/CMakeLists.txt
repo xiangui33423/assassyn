@@ -34,7 +34,7 @@ find_library(RAMULATOR_LIBRARY
 )
 
 # Add wrapper shared library
-add_library(wrapper SHARED MyWrapper.cpp)
+add_library(wrapper SHARED CRamualator2Wrapper.cpp)
 
 # Link libramulator using the found library
 target_link_libraries(wrapper ${RAMULATOR_LIBRARY})

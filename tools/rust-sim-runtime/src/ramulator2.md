@@ -120,3 +120,10 @@ through FFI. Users must ensure:
 3. Callbacks are properly implemented and don't cause undefined behavior
 4. Memory addresses are valid and properly aligned
 5. The interface is not used concurrently from multiple threads without proper synchronization
+
+## Multi-platform Support
+
+As discussed in [Rust simulator generation](../../../python/assassyn/codegen/simulator/simulator.md),
+Linux and MacOS has different behaviors on dynamic objects that links other dynamic objects,
+and MacOS has to manually specify `RTLD_LAZY | RTLD_GLOBAL` flag.
+Thus a platform-related macro shall be imposed.

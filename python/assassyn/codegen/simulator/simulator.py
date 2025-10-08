@@ -188,7 +188,7 @@ def dump_simulator( #pylint: disable=too-many-locals, too-many-branches, too-man
     # Constructor
     fd.write("  pub fn new() -> Self {\n")
     fd.write("let mem = unsafe {")
-    midfix = '/testbench/simulator/build/lib/libwrapper'
+    midfix = '/tools/c-ramulator2-wrapper/build/lib/libwrapper'
     if platform_os == 'darwin':
         fd.write(f'let lib = Library::open(Some("{home}{midfix}{dynamiclib_suffix()}"), '
                  'RTLD_GLOBAL | RTLD_LAZY).unwrap();')
@@ -279,7 +279,7 @@ def dump_simulator( #pylint: disable=too-many-locals, too-many-branches, too-man
     fd.write(f"""
      unsafe {{
             sim.mem_interface
-                .init("{home}/testbench/simulator/configs/example_config.yaml");
+                .init("{home}/tools/c-ramulator2-wrapper/configs/example_config.yaml");
         }}
     """)
 
@@ -384,7 +384,7 @@ def dump_simulator( #pylint: disable=too-many-locals, too-many-branches, too-man
         sim.tick_registers();
         unsafe {{
             sim.mem_interface.frontend_tick();
-            sim.mem_interface.memory_tick();
+            sim.mem_interface.memory_system_tick();
         }}
       }}
     """)
