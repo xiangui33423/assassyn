@@ -1,79 +1,39 @@
 '''The module provides the implementation of a class that is both IR builder and the system.'''
 
-#pylint: disable=cyclic-import
+#pylint: disable=cyclic-import,duplicate-code
 
 from __future__ import annotations
-import os
-import typing
-import site
-import inspect
-import ast
+
 import functools
-from .namify import NamingManager
+import inspect
+import os
+import site
+import typing
+from .naming_manager import (
+    NamingManager,
+    get_naming_manager,
+    set_naming_manager,
+)
+from .rewrite_assign import rewrite_assign
+from .type_oriented_namer import TypeOrientedNamer
+from .unique_name import UniqueNameCache
 
 if typing.TYPE_CHECKING:
-    from .ir.module import Module
-    from .ir.array import Array
-    from .ir.dtype import DType
-    from .ir.value import Value
+    from ..ir.array import Array
+    from ..ir.dtype import DType
+    from ..ir.module import Module
+    from ..ir.value import Value
 
-def process_naming(expr, line_of_code: str, lineno: int) -> typing.Dict[str, typing.Any]:
-    """Process naming for an expression based on line context"""
+__all__ = [
+    # Core components
+    'UniqueNameCache',
+    'TypeOrientedNamer',
+    'NamingManager',
 
-    line_expression_tracker = Singleton.line_expression_tracker
-    naming_manager = Singleton.naming_manager
-    try:
-        parsed_ast = ast.parse(line_of_code)
-        # print(ast.dump(parsed_ast, indent=4))
-        if parsed_ast.body and isinstance(parsed_ast.body[0], ast.Assign):
-            assign_node = parsed_ast.body[0]
-
-            if lineno not in line_expression_tracker:
-                line_expression_tracker[lineno] = {
-                    'expressions': [],
-                    'assign_node': assign_node,
-                    'names_generated': False,
-                    'generated_names': []
-                }
-            line_data = line_expression_tracker[lineno]
-
-            if  line_data['names_generated'] and expr.opcode == 800:
-                line_data = line_expression_tracker[lineno]
-                expr_position = len(line_data['expressions']) - 1
-                generated_names = line_data['generated_names']
-                if expr_position < len(generated_names):
-                    # Ensure uniqueness for cast operations
-                    base_name = f"{generated_names[expr_position]}_cast"
-                    # Use the naming manager to ensure global uniqueness
-                    unique_name = naming_manager.strategy.get_unique_name(base_name)
-                    return unique_name
-
-            line_data['expressions'].append(expr)
-
-            if not line_data['names_generated']:
-                generated_names = naming_manager.generate_source_names(
-                    lineno, assign_node
-                )
-                line_data['generated_names'] = generated_names
-                line_data['names_generated'] = True
-
-            expr_position = len(line_data['expressions']) - 1
-            generated_names = line_data['generated_names']
-
-            if expr_position < len(generated_names):
-                source_name = generated_names[expr_position]
-            else:
-                base_name = generated_names[0] if generated_names else "expr"
-                source_name = f"tmp_{base_name}_{expr_position}"
-                source_name = naming_manager.strategy.get_unique_name(source_name)
-
-            return source_name
-
-    except SyntaxError:
-        pass
-
-
-    return None
+    # Global functions
+    'get_naming_manager',
+    'set_naming_manager',
+]
 
 
 def ir_builder(func=None, *, node_type=None):
@@ -81,7 +41,7 @@ def ir_builder(func=None, *, node_type=None):
 
     def _decorate(target):
         @functools.wraps(target)
-        def _wrapper(*args, **kwargs):
+        def _wrapper(*args, **kwargs):  # pylint: disable=too-many-nested-blocks
             res = target(*args, **kwargs)
 
             # This indicates this res is handled somewhere else, so we do not need to rehandle it
@@ -89,9 +49,13 @@ def ir_builder(func=None, *, node_type=None):
                 return res
 
             #pylint: disable=cyclic-import,import-outside-toplevel
-            from .ir.const import Const
-            from .utils import package_path
-            from .ir.expr import Expr
+            from ..ir.const import Const
+            from ..utils import package_path
+            from ..ir.expr import Expr
+
+            manager = get_naming_manager()
+            if manager and isinstance(res, Expr):
+                manager.push_value(res)
 
             if not isinstance(res, Const):
                 if isinstance(res, Expr):
@@ -103,7 +67,7 @@ def ir_builder(func=None, *, node_type=None):
             package_dir = os.path.abspath(package_path())
 
             Singleton.initialize_dirs_to_exclude()
-            for i in inspect.stack()[2:]:
+            for i in inspect.stack()[2:]:  # pylint: disable=too-many-nested-blocks
                 fname, lineno = i.filename, i.lineno
                 fname_abs = os.path.abspath(fname)
 
@@ -114,17 +78,8 @@ def ir_builder(func=None, *, node_type=None):
                     ):
                     res.loc = f'{fname}:{lineno}'
 
-                    if isinstance(res, Expr):
-                        if res.is_valued() and i.code_context:
-                            line_of_code = i.code_context[0].strip()
-
-                            naming_result = process_naming(
-                                res,
-                                line_of_code,
-                                lineno
-                            )
-                            if naming_result:
-                                res.source_name = naming_result
+                    # Previously extracted a best-effort naming hint here.
+                    # No longer needed as AST-rewrite provides exact names.
                     break
             assert hasattr(res, 'loc')
             return res
@@ -169,7 +124,7 @@ class SysBuilder:
     def enter_context_of(self, ty, entry):
         '''Enter the context of the given type.'''
         #pylint: disable=import-outside-toplevel
-        from .ir.block import CondBlock
+        from ..ir.block import CondBlock
         if isinstance(entry, CondBlock):
             self.current_module.add_external(entry.cond)
         self._ctx_stack[ty].append(entry)
@@ -217,6 +172,7 @@ class SysBuilder:
         Singleton.builder = self
         Singleton.line_expression_tracker = self.line_expression_tracker
         Singleton.naming_manager = self.naming_manager
+        set_naming_manager(self.naming_manager)
         return self
 
     def __exit__(self, exc_type, exc_value, traceback):
@@ -225,6 +181,7 @@ class SysBuilder:
         Singleton.builder = None
         Singleton.line_expression_tracker = None
         Singleton.naming_manager = None
+        set_naming_manager(None)
 
     def __repr__(self):
         body = '\n\n'.join(map(repr, self.modules))
