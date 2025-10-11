@@ -193,12 +193,17 @@ use std::ffi::c_void;
         let stamp = sim.request_stamp_map_table
             .remove(&req.addr)
             .unwrap_or_else(|| sim.stamp);
-        
+
         if req.type_id == 0 {{
             // Read response
             sim.{module_name}_response.valid = true;
             sim.{module_name}_response.addr = req.addr as usize;
-            sim.{module_name}_response.data = vec![(req.addr as u8) & 0xFF, ((req.addr >> 8) as u8) & 0xFF, ((req.addr >> 16) as u8) & 0xFF, ((req.addr >> 24) as u8) & 0xFF];
+            sim.{module_name}_response.data = vec![
+                (req.addr as u8) & 0xFF,
+                ((req.addr >> 8) as u8) & 0xFF,
+                ((req.addr >> 16) as u8) & 0xFF,
+                ((req.addr >> 24) as u8) & 0xFF
+            ];
             sim.{module_name}_response.read_succ = true;
             sim.{module_name}_response.is_write = false;
         }} else {{
