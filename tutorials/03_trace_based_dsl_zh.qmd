@@ -1,0 +1,603 @@
+---
+title: "理解 Assassyn 的 Trace-based DSL"
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    mermaid:
+      theme: default
+      themeVariables:
+        clusterBkg: "#f8fafc"
+        clusterBorder: "#cbd5e1"
+        primaryColor: "#ffffff"
+        primaryTextColor: "#0f172a"
+        lineColor: "#475569"
+
+---
+
+# Tutorial: 理解 Assassyn 的 Trace-based DSL
+
+> **作者:** Claude (Anthropic)
+> **日期:** 2025.10.13
+>
+
+## 1. 引言
+
+### 1.1 什么是 Trace-based DSL?
+
+Assassyn 采用了一种嵌入在 Python 中的 trace-based DSL (领域特定语言)。与传统的 parser-based frontend 不同,trace-based DSL 通过运算符重载来构建硬件描述的抽象语法树 (AST)。
+
+**核心思想:**
+- 在 tracing 作用域内,所有操作都被重载
+- `a + b` 不是计算加法结果,而是创建一个 `Add` 节点并加入到当前的插入点
+- Python 代码的执行过程就是构建 IR 的过程
+
+### 1.2 为什么使用 Trace-based DSL?
+
+```{mermaid}
+flowchart LR
+    A[Parser-based<br/>需要开发解析器] -->|复杂| B[维护成本高]
+    C[Trace-based<br/>嵌入 Python] -->|简单| D[利用 Python 语法]
+    D --> E[运算符重载<br/>构建 IR]
+
+    style C fill:#e8f5e9
+    style D fill:#e8f5e9
+    style E fill:#e8f5e9
+```
+
+**优势:**
+- 无需开发和维护复杂的解析器
+- 充分利用 Python 的语法和工具链
+- 开发效率高,调试方便
+
+---
+
+## 2. Python `if` vs Assassyn `Condition`: 核心区别
+
+这是理解 trace-based DSL 最重要的概念。
+
+### 2.1 概念对比
+
+| 特性 | Python `if` | Assassyn `Condition` |
+|------|------------|---------------------|
+| 求值时机 | 编译时 (Python 运行时) | 硬件运行时 |
+| 作用 | 控制 trace 路径,条件编译 | 生成硬件条件逻辑 |
+| 条件表达式 | Python 表达式 (bool) | Assassyn IR 值 (Bits/UInt) |
+| 生成硬件 | 不生成,直接选择分支 | 生成 mux 和条件块 |
+| 类比 | C/C++ 的 `#if` 预处理 | Verilog 的 `if` 语句 |
+
+```{mermaid}
+flowchart TD
+    subgraph PythonIf["Python if (编译时)"]
+        A1[Python 运行时<br/>评估条件] --> B1{条件为真?}
+        B1 -->|是| C1[trace 分支 1<br/>构建对应 IR]
+        B1 -->|否| D1[trace 分支 2<br/>构建对应 IR]
+    end
+
+    subgraph AssasynCond["Assassyn Condition (运行时)"]
+        A2[构建 IR 阶段] --> B2[创建 CondBlock]
+        B2 --> C2[生成硬件 mux]
+        C2 --> D2[硬件运行时<br/>评估条件]
+    end
+
+    style PythonIf fill:#fff3e0
+    style AssasynCond fill:#e3f2fd
+```
+
+### 2.2 实战对比:看看生成的 IR
+
+让我们通过实际代码来看看两者的本质区别。**重点观察生成的 IR 结构**。
+
+```{python}
+#| code-fold: false
+
+import warnings
+warnings.filterwarnings("ignore")
+
+import sys
+import os
+lib_path = os.path.abspath(os.path.join(os.path.dirname("03_trace_based_dsl_zh.qmd"), '../python/'))
+sys.path.append(lib_path)
+from function_t import run_quietly, build_and_show_ir, generate_and_show_verilog
+
+from assassyn.frontend import *
+from assassyn.backend import elaborate
+from assassyn import utils
+import assassyn
+
+print("✅ 环境配置完成")
+```
+
+#### 示例 1: Python `if` - 条件编译
+
+当我们使用 Python `if` 时,不同的分支会生成完全不同的硬件:
+
+```{python}
+#| code-fold: false
+
+ENABLE_FEATURE = True  # 尝试改为 False 观察生成代码的变化
+
+class PythonIfExample(Module):
+    """展示 Python if 的条件编译"""
+
+    def __init__(self):
+        super().__init__(ports={})
+
+    @module.combinational
+    def build(self):
+        counter = RegArray(UInt(32), 1)
+        counter[0] = counter[0] + UInt(32)(1)
+
+        if ENABLE_FEATURE:
+            # 当 ENABLE_FEATURE=True 时,这个分支被 trace
+            result = counter[0] * UInt(32)(2)
+            log("Feature enabled: result = {}", result)
+        else:
+            # 当 ENABLE_FEATURE=False 时,这个分支被 trace
+            result = counter[0] + UInt(32)(10)
+            log("Feature disabled: result = {}", result)
+
+# 构建并显示 IR
+sys1 = build_and_show_ir(PythonIfExample, f'python_if_demo (ENABLE={ENABLE_FEATURE})')
+
+# 生成 Verilog (可选)
+verilog_path1 = generate_and_show_verilog(sys1)
+```
+
+**🔍 关键观察 (看上面的 IR 输出):** <br>
+- ✅ IR 中直接包含 `result = counter_rd * (2:u32)` (乘法) <br>
+- ❌ IR 中**不存在**加法逻辑 `counter + 10`<br>
+- ❌ IR 中**没有** `when` 条件块<br>
+- 💡 只有一个分支被 trace,硬件结构在编译时就确定了
+
+**📌 重点:** 因为 `ENABLE_FEATURE=True`,Python 只执行了 `if` 的 True 分支,所以 `else` 分支的代码根本没有被 trace,生成的 IR 里只有乘法,没有加法!
+
+#### 示例 2: Assassyn `Condition` - 硬件条件
+
+现在使用 `Condition`,代码会生成硬件条件判断逻辑:
+
+```{python}
+#| code-fold: false
+
+class ConditionExample(Module):
+    """展示 Assassyn Condition 的硬件条件"""
+
+    def __init__(self):
+        super().__init__(ports={})
+
+    @module.combinational
+    def build(self):
+        counter = RegArray(UInt(32), 1)
+        counter[0] = counter[0] + UInt(32)(1)
+
+        # enable 是一个硬件信号 (Bits 类型)
+        enable = counter[0] < UInt(32)(50)
+
+        with Condition(enable):
+            # 这段代码总是被 trace,生成的硬件在 enable 为真时才执行
+            result = counter[0] * UInt(32)(2)
+            log("Counter active: result = {}", result)
+
+# 构建并显示 IR
+sys2 = build_and_show_ir(ConditionExample, 'condition_demo')
+
+# 生成 Verilog (可选)
+verilog_path2 = generate_and_show_verilog(sys2)
+```
+
+**🔍 关键观察 (看上面的 IR 输出):**<br>
+- ✅ IR 中包含 `when enable { ... }` 条件块<br>
+- ✅ 乘法运算在 `when` 块**内部**<br>
+- ✅ 生成了 `enable = counter_rd < (50:u32)` 条件信号<br>
+- 💡 所有代码都被 trace,硬件在运行时根据信号动态判断
+
+**📌 重点:** 使用 `with Condition(enable)`,Python 把整个 `with` 块都 trace 了,生成的 IR 包含完整的 `when enable { ... }` 条件结构,硬件会在运行时判断!
+
+#### 对比总结
+
+```{python}
+print("\n" + "="*60)
+print("📊 IR 对比总结")
+print("="*60)
+print("\n1️⃣  Python if (ENABLE_FEATURE=True):")
+print("   ✓ 直接生成: result = counter * 2")
+print("   ✗ 无条件块: 没有 when")
+print("   → 编译时选择分支,硬件固定\n")
+
+print("2️⃣  Assassyn Condition (enable 信号):")
+print("   ✓ 生成条件: enable = counter < 50")
+print("   ✓ 条件块:   when enable { result = ... }")
+print("   → 运行时动态判断,硬件可切换\n")
+
+print("💡 类比:")
+print("   Python if    ←→ C 的 #if 预处理器")
+print("   Condition    ←→ Verilog 的 if 语句")
+print("="*60)
+```
+
+---
+
+## 3. 完整示例:条件计数器模块
+
+让我们通过一个完整的例子来演示两种方式的混合使用。
+
+### 3.1 示例:混合使用 `if` 和 `Condition`
+
+```{python}
+#| code-fold: false
+
+# Python 常量 - 用于条件编译
+DEBUG_MODE = True
+MAX_COUNT = 10
+
+class ConditionalCounter(Module):
+    """演示 Python if 和 Assassyn Condition 的区别"""
+
+    def __init__(self):
+        super().__init__(
+            ports={
+                'enable': Port(Bits(1)),  # 硬件输入信号
+            }
+        )
+
+    @module.combinational
+    def build(self):
+        enable = self.pop_all_ports(True)
+        counter = RegArray(UInt(32), 1)
+
+        # Python if: 条件编译 - 在 Python 运行时决定
+        if MAX_COUNT == 10:
+            # 因为 MAX_COUNT == 10,这个分支被 trace
+            threshold = UInt(32)(10)
+            log("[Compiled] Using threshold: 10")
+        else:
+            # 这个分支不会被 trace
+            threshold = UInt(32)(20)
+            log("[Compiled] Using threshold: 20")
+
+        # 硬件条件 1: 检查计数器是否小于阈值
+        not_reached = counter[0] < threshold
+
+        with Condition(not_reached):
+            # 这段代码总是被 trace,但硬件运行时才判断
+            counter[0] = counter[0] + UInt(32)(1)
+
+        # 硬件条件 2: 检查外部 enable 信号
+        with Condition(enable[0:0]):
+            # 只有当 enable 为高电平时才执行
+            log("[Runtime] Counter is enabled: {}", counter[0])
+
+        # Python if: 条件编译 - 调试模式
+        if DEBUG_MODE:
+            # 因为 DEBUG_MODE 为 True,这段代码被包含在硬件中
+            log("[Debug] Counter={}, not_reached={}", counter[0], not_reached)
+
+print("ConditionalCounter 模块定义完成")
+```
+
+### 3.2 驱动模块
+
+```{python}
+#| code-fold: false
+
+class Driver(Module):
+    """驱动 ConditionalCounter 模块"""
+
+    def __init__(self):
+        super().__init__(ports={})
+
+    @module.combinational
+    def build(self, counter_module: ConditionalCounter):
+        cycle_cnt = RegArray(UInt(32), 1)
+        cycle_cnt[0] = cycle_cnt[0] + UInt(32)(1)
+
+        # Python if: 根据周期数决定 enable 信号的生成方式
+        if True:  # 可以改为 False 看看效果
+            # 奇数周期 enable 为 1
+            enable_signal = cycle_cnt[0][0:0]
+        else:
+            # 总是 enable
+            enable_signal = Bits(1)(1)
+
+        # 调用计数器模块 (硬件运行时)
+        cond = cycle_cnt[0] < UInt(32)(30)
+        with Condition(cond):
+            counter_module.async_called(enable=enable_signal)
+
+print("Driver 模块定义完成")
+```
+
+### 3.3 系统构建和仿真
+
+```{python}
+# | output-fold: true
+
+print("开始构建系统...")
+
+# 1. 构建系统
+sys_build = SysBuilder("trace_dsl_demo")
+with sys_build:
+    counter = ConditionalCounter()
+    counter.build()
+
+    driver = Driver()
+    driver.build(counter)
+
+print(sys_build)
+
+# 2. 配置仿真参数
+config = assassyn.backend.config(
+    verilog=utils.has_verilator(), sim_threshold=100, idle_threshold=100, random=False
+)
+
+
+# 3. 生成仿真器
+def generate_simulator():
+    return elaborate(sys_build, **config)
+
+
+(simulator_path, verilator_path), _, _ = run_quietly(generate_simulator)
+print("仿真器生成完成")
+
+
+# 4. 运行仿真
+def run_sim():
+    return utils.run_simulator(simulator_path)
+
+
+raw, _, _ = run_quietly(run_sim)
+
+print("\n=== 仿真输出 (前 20 行) ===")
+lines = raw.split("\n")
+for i, line in enumerate(lines[:20]):
+    if line.strip():
+        print(line)
+
+print(f"\n总共输出 {len([l for l in lines if l.strip()])} 行")
+```
+
+---
+
+## 4. 深入理解:`@rewrite_assign` 装饰器
+
+### 4.1 为什么需要 `@rewrite_assign`?
+
+Python 的赋值语句 `a = b` 无法被重载,这给 trace-based DSL 带来了变量命名的问题。
+
+```python
+# 问题:无法从 IR 中获取变量名 "result"
+result = a + b  # Python 赋值无法被重载
+```
+
+### 4.2 `@rewrite_assign` 的工作原理
+
+```{mermaid}
+flowchart LR
+    A[原始 Python 代码<br/>result = a + b] --> B[AST 解析]
+    B --> C[AST 转换]
+    C --> D[重写后代码<br/>result = __assassyn_assignment__<br/>'result', a + b]
+    D --> E[命名系统处理<br/>设置 IR 名称]
+
+    style A fill:#fff3e0
+    style D fill:#e8f5e9
+    style E fill:#e3f2fd
+```
+
+**转换示例:**
+
+```python
+# 原始代码
+@rewrite_assign
+def decode(self, opcode):
+    result = self.value == opcode
+    return result
+
+# 被转换为 (概念上)
+def decode(self, opcode):
+    result = __assassyn_assignment__("result", self.value == opcode)
+    return result
+```
+
+### 4.3 使用场景
+
+在 `instructions.py` 中可以看到实际使用:
+
+```python
+@rewrite_assign
+def decode(self, opcode, funct3, funct7, alu):
+    view = self.view()
+    opcode = view.opcode == Bits(7)(opcode)  # 变量名 "opcode" 被捕获
+    funct3 = view.funct3 == Bits(3)(funct3)  # 变量名 "funct3" 被捕获
+    funct7 = view.funct7 == Bits(7)(funct7)  # 变量名 "funct7" 被捕获
+
+    # Python if: 条件编译
+    if ex_code is not None:
+        ex = view.rs2 == Bits(5)(ex_code)
+    else:
+        ex = Bits(1)(1)
+
+    eq = opcode & funct3 & funct7 & ex
+    return InstSignal(eq, alu)
+```
+
+---
+
+## 5. 实用指南:何时使用 `if` vs `Condition`
+
+### 5.1 使用 Python `if` 的场景
+
+```python
+# 1. 根据参数决定硬件结构
+def build_alu(self, use_multiplier: bool):
+    if use_multiplier:
+        # 生成包含乘法器的硬件
+        result = a * b
+    else:
+        # 生成不含乘法器的硬件
+        result = a + b
+
+# 2. 调试代码的开关
+DEBUG = True
+if DEBUG:
+    log("Debug info: {}", value)
+
+# 3. 根据数据类型选择实现
+if isinstance(value, int):
+    const_val = UInt(32)(value)
+else:
+    const_val = value
+
+# 4. 可选字段的处理
+if field is not None:
+    result = process(field)
+```
+
+### 5.2 使用 Assassyn `Condition` 的场景
+
+```python
+# 1. 硬件运行时条件
+enable = control_signal == Bits(1)(1)
+with Condition(enable):
+    register[0] = new_value
+
+# 2. 状态机转换
+is_idle = state == STATE_IDLE
+with Condition(is_idle):
+    state_next = STATE_ACTIVE
+
+# 3. 条件日志输出
+valid_output = output > threshold
+with Condition(valid_output):
+    log("Output valid: {}", output)
+
+# 4. 条件执行
+should_execute = counter < max_cycles
+with Condition(should_execute):
+    module.async_called(data=data)
+```
+
+### 5.3 决策流程图
+
+```{mermaid}
+flowchart TD
+    A[需要条件判断] --> B{条件是否在<br/>Python 运行时已知?}
+    B -->|是| C[使用 Python if]
+    B -->|否| D{条件依赖于<br/>硬件信号?}
+    D -->|是| E[使用 Condition]
+    D -->|否| F[检查设计逻辑]
+
+    C --> G[示例:<br/>- 编译选项<br/>- 参数配置<br/>- None 检查]
+    E --> H[示例:<br/>- 计数器比较<br/>- 状态检查<br/>- 使能信号]
+
+    style C fill:#fff3e0
+    style E fill:#e3f2fd
+```
+
+---
+
+## 6. 常见模式和最佳实践
+
+### 6.1 混合使用模式
+
+```python
+@rewrite_assign
+def process(self, data, config_mode: int):
+    # Python if: 根据配置选择算法
+    if config_mode == 1:
+        threshold = UInt(32)(100)
+    elif config_mode == 2:
+        threshold = UInt(32)(200)
+    else:
+        threshold = UInt(32)(50)
+
+    # Condition: 运行时判断
+    is_valid = data < threshold
+    with Condition(is_valid):
+        log("Data {} is valid", data)
+        result = data * UInt(32)(2)
+
+    # Python if: 可选的额外处理
+    if config_mode >= 2:
+        with Condition(data > UInt(32)(0)):
+            log("Extra check passed")
+```
+
+### 6.2 条件嵌套
+
+```python
+# Python if 和 Condition 的嵌套
+FEATURE_ENABLED = True
+
+@module.combinational
+def build(self):
+    counter = RegArray(UInt(32), 1)
+    enable = counter[0] < UInt(32)(10)
+
+    if FEATURE_ENABLED:  # Python if: 外层
+        with Condition(enable):  # Condition: 内层
+            log("Feature active: {}", counter[0])
+
+            if DEBUG_MODE:  # Python if: 再内层
+                log("Debug: enable={}", enable)
+```
+
+### 6.3 类比 C/C++ 预处理
+
+```c
+// C/C++ 的预处理指令
+#if DEBUG_MODE
+    printf("Debug mode\n");
+#else
+    printf("Release mode\n");
+#endif
+
+// 对应 Python if (条件编译)
+DEBUG_MODE = True
+if DEBUG_MODE:
+    log("Debug mode")
+else:
+    log("Release mode")
+```
+
+```c
+// C/C++ 的运行时条件
+if (counter < threshold) {
+    printf("Counter: %d\n", counter);
+}
+
+// 对应 Assassyn Condition (硬件条件)
+is_below = counter < threshold
+with Condition(is_below):
+    log("Counter: {}", counter)
+```
+
+---
+
+## 7. 总结
+
+### 7.1 核心要点
+
+1. **Trace-based DSL** 通过运算符重载构建 IR,执行 Python 代码即构建硬件描述
+2. **Python `if`** 在编译时求值,控制 trace 路径,实现条件编译
+3. **Assassyn `Condition`** 生成硬件条件逻辑,在硬件运行时求值
+4. **`@rewrite_assign`** 通过 AST 转换捕获变量名,实现语义化命名
+5. 两种方式可以混合使用,根据条件的求值时机选择合适的方式
+
+### 7.2 类比总结表
+
+| Assassyn | C/C++ | Verilog | 求值时机 |
+|----------|-------|---------|---------|
+| Python `if` | `#if` | 无 (参数化) | 编译时 |
+| `Condition` | `if` | `if` | 运行时 |
+| `@rewrite_assign` | 无 | 无 | 编译时 (AST) |
+
+
+## 8. 进一步阅读
+
+- [docs/design/lang/trace.md](../docs/design/lang/trace.md) - Trace-based DSL 设计文档
+- [docs/design/lang/dsl.md](../docs/design/lang/dsl.md) - DSL 概念总览
+- [python/assassyn/builder/rewrite_assign.md](../python/assassyn/builder/rewrite_assign.md) - `@rewrite_assign` 实现细节
+- [python/assassyn/ir/block.md](../python/assassyn/ir/block.md) - `Condition` 和 `Block` 的实现
+- [examples/minor-cpu/src/decoder.py](../examples/minor-cpu/src/decoder.py) - 实际项目中的使用示例
+
+---
