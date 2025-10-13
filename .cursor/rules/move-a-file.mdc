@@ -1,0 +1,26 @@
+---
+alwaysApply: false
+description: How to move, remove, rename, and create files
+---
+
+Applying move, removal, renaming, and creation to a source code file is trivial,
+as it is enforced by the compiler, which will finally be iterated
+into a correct format.
+
+When it gets involved with document files `*.md`, things become tricky,
+as there is no formal enforcement like compilation to gaurantee the 
+process. After applying such operations mentioned above to a file,
+no matter, source or document, we should do the followings to 
+maintain the consistency across documents and source codes:
+
+1. Before changing the file, use `grep` at the root of this repository with
+   this file name and and its associated file (for a document it is a source,
+   for a source it is a document, vice versa) to find all the related usages.
+   A path usage to this can either be:
+   1. a relative path in markdown link, `[text](./relative/path/from/this/file)`,
+   2. a absolute path in this project `assassyn/path/to/file`.
+2. Match the file paths pointing to this file and make changes to them to the new path.
+  - If it is a removal, remove their usage. Make sure the code is deprecated.
+  - If it is a rename, change to the new paths.
+  - If it is a creation, make sure those related files mention to it.
+3. Apply the changes to the new destination, including removal, renaming, and creation.

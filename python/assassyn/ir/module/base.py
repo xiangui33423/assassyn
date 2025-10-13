@@ -1,16 +1,14 @@
 '''The base class for the module definition.'''
 
 from __future__ import annotations
-import ast
 import inspect
-import textwrap
 import typing
 
 from functools import wraps
 
 from ...utils import namify, unwrap_operand, identifierize
 from ...builder import ir_builder, Singleton
-from ...builder.rewrite_assign import rewrite_assign, __assassyn_assignment__ as _assignment_fn
+from ...builder.rewrite_assign import rewrite_assign
 from ..expr import Operand, Expr
 from ..expr.intrinsic import PureIntrinsic
 
@@ -75,38 +73,12 @@ class ModuleBase:
                     res = res + f'  //  .usedby: condition::{operand.user.as_operand()}\n'
         return res
 
-def combinational_for(module_type):
+def combinational_for(module_type):  # pylint: disable=too-many-statements
     '''Decorator factory for combinational module build functions with naming support.'''
 
-    def decorator(func):
-        try:
-            source = textwrap.dedent(inspect.getsource(func))
-            tree = ast.parse(source)
-            func_def = tree.body[0]
-
-            rewritten_func_def = rewrite_assign(func_def)
-            rewritten_func_def.decorator_list = []
-
-            tree.body[0] = rewritten_func_def
-            ast.fix_missing_locations(tree)
-
-            namespace = func.__globals__
-            had_assignment_hook = '__assassyn_assignment__' in namespace
-            previous_hook = namespace.get('__assassyn_assignment__')
-            namespace['__assassyn_assignment__'] = _assignment_fn
-
-            code = compile(tree, func.__code__.co_filename, 'exec')
-            exec(code, namespace)  # pylint: disable=exec-used
-            new_func = namespace[func.__name__]
-
-            if had_assignment_hook:
-                namespace['__assassyn_assignment__'] = previous_hook
-        except Exception as exc:  # pylint: disable=broad-except
-            # Fallback to original function if rewriting fails
-            # Deferred import to avoid cycles at module import time.
-            import sys  # pylint: disable=import-outside-toplevel
-            print(f"Warning: AST rewriting failed for {func.__name__}: {exc}", file=sys.stderr)
-            new_func = func
+    def decorator(func):  # pylint: disable=too-many-locals,too-many-statements
+        # Use rewrite_assign to handle AST transformation
+        new_func = rewrite_assign(func, adjust_lineno=True)
 
         @wraps(func)
         def wrapper(*args, **kwargs):

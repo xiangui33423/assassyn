@@ -1,0 +1,145 @@
+---
+alwaysApply: false
+globs:
+  - python/assassyn/*.md
+  - python/assassyn/**/*.md
+  - python/assassyn/**/**/.md
+  - docs/*.md
+  - docs/**/*.md
+  - tools/**/**/*.md
+  - tools/**/*.md
+description: How write documents and when to read documents
+---
+
+# Documentation
+
+## Naming Correspondence
+
+Each source code file, including but not limited to `.py/.rs/.cpp/.cc`,
+shall have a `.md` file with the same prefix, in the same folder.
+
+If there is a `README.md` within a folder, and there
+is `mod.rs` or `__init__.py` in this folder, these
+modules SHOULD NOT be documented by `README.md`.
+They should have their own `mod.md` and `__init__.md`
+to maintain a consistent naming correspondence.
+But still, it is not recommended to implement anything in
+these package initialization. These source units should only
+expose functions to external modules.
+
+## Document File Structure
+
+It is mandatory to have a `README.md` in each folder to briefly summarize
+the file structure within this folder, including the functionality
+of each file in this folder, as well as the immediate sub-folder.
+
+## Document Source Code
+
+When documenting a source code, such a document should be separated into
+the following sections.
+
+### Section 0. Summary
+
+Before documenting any interfaces, a brief summary is optional.
+If the documented module highly relies on project-specific knowledge,
+or the whole module is achieving one thing, this shall be briefly summarized
+in this section.
+
+### Section 1. Exposed Interfaces
+
+This section shall describe all the function interfaces and data structures in this source file unit
+that are exposed to the usage for other parts of the project.
+All the functions and data structures documented should follow the
+[function](#document-functions) and [document](#document-structs) conventions discussed below.
+
+### Section 2. Internal Helpers
+
+To keep the complexity of the implementation of each exposed interface, internal helper functions and structs shall be developed.
+These internal helpers' visibility is limited in a scope. This section shall describe all the function interfaces and
+data structures that are implemented in this source code unit. All funcitons and data structures
+shall follow the [function](#document-functions) and [document](#document-structs) conventions discussed below.
+
+### Document Structs
+
+Each struct should have its own subsection, this subsection should describe
+- the purpose of each `struct/class`.
+- the meaning of each member field, and static member field.
+
+Each struct should have a subsection under this section named `struct StructID` to document.
+All the function memthod members should be included in this subsection, and 
+follow the [function documentation convention below](#document-functions).
+
+### Document Functions
+
+Each function should have its own identifier, without parameters, as the section name.
+
+This section starts with the function signature with
+language-embedded documents For example, Rust uses `///`,
+it is favored to use `Doxygen` style for C/C++,
+and Python has `'''` pair for docstring. These documents briefs
+the API behavior and each parameter, as well as the return (if any),
+like below:
+
+```python
+def foo(a, b):
+  '''
+  Briefly talk about the behavior here
+
+  @param a The first parameter
+  @param b The 2nd parameter
+  @return If any, explain it.
+  '''
+```
+
+A rule of thumb is that minimize the ambiguity of each aspect
+you document. For example, for `subprocess.check_output` in Python:
+- DO NOT SAY: "It returns the output of the subprocess" where output can be anything, even the return value.
+- SAY: "It returns the subprocess output to stdout." which is more specific.
+
+Different rules are imposed on functions with different levels of complexity. To determine:
+1. A function is considered simple, if:
+   - This function is a short (< 5 lines) helper, or
+   - this function only depends on its input to produce the output, and the behavior
+     can be summarized accurately and briefly. No specific design decisions, definitions,
+     or complicated interfaces exposed by other source units witin this project
+     are required to understand and develop this function.
+     - For example, a function that "sums up the norm the two given vectors, and normalize
+       the result vector length", which cannot be implemented in 5 lines, but it requires
+       no knowledge specific to this project.
+   - A wrapper function is special, a wrapper function can call a very complicated
+     interface outside this project unit, but it is still considered as simple.
+     It should document:
+       - The location of the external function.
+       - The purpose of wrapping, e.g. foreign function interface? providing a unified
+         function signature? or legacy management?
+2. If a function is complicated, because either:
+   - It is long with multiple steps to achieve a goal. In this case, each step should
+     be carefully elaborated.
+   - Its implementation involves several project-specific high-level view, design decision
+     and other related knowledge. To gain such knowledge of this project, and determine
+     if this function requires them, refer to [reading document](#read-document) section
+     for more details. If such knowledge is involved when developing this function,
+     such knowledge should refer to the document it was initially discussed.
+   - No matter how many lines, if a function acts on a global variable declared outside
+     this source unit, we should pay extra attention to it. It is inevitable to track some
+     global states across the project, and for development experience purpose they are implicitly
+     referred singletons. A pointer to that file of declaration should be added, especially from the `docs/design/*.md`.
+
+A simple function can be simply documented by the function signature and documentation
+strings embbed in comments. In addition to what simple functions already have, complicated
+functions should be followed by **Explanation** paragraph to explain
+1. Each step of the function;
+2. The project-specific knowledge required to understand this function, and point to the document;
+3. When it comes to 2, TRY YOUR VERY BEST to find the specific file that documents
+   the knowledge or the source unit implements the function it relies on,
+   and put a Markdown link, `[knowledge](/lint/to/it)`, for it;
+4. Dirty details that this function trying to handle;
+5. Technical decisions made by this function.
+
+## Best Practice
+
+To maintain a LLM context friendly document length,
+if possible, keep the document length around 300-500 lines.
+It is acceptable to have a document up to 800 lines.
+If a document is more than 500 lines, leave a `TODO-breakdown-module-xxx.md`
+file for human intervention.
