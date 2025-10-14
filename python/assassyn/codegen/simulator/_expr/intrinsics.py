@@ -49,7 +49,6 @@ def _codegen_get_mem_resp(node, module_ctx, sys, **_kwargs):
     """Generate code for GET_MEM_RESP intrinsic."""
     dram_module = node.args[0]
     dram_name = namify(dram_module.name)
-    # Convert Vec<u8> to BigUint using from_bytes_le as documented
     return f"BigUint::from_bytes_le(&sim.{dram_name}_response.data)"
 
 
@@ -148,10 +147,6 @@ def _codegen_send_write_request(node, module_ctx, sys, **_kwargs):
                     }} else {{
                         false
                     }}"""
-
-
-
-
 
 
 # Dispatch table for intrinsic operations
