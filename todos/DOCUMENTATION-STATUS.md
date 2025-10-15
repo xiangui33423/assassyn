@@ -6,60 +6,11 @@
 
 ---
 
-## 1. TO CHECK (31 files) - Review existing documentation against new rules
-
-### Leaf-level files (simple to complex)
-- [ ] `ir/memory/base.py` → `ir/memory/base.md` (to check)
-- [ ] `ir/memory/dram.py` → `ir/memory/dram.md` (to check)
-- [ ] `ir/memory/sram.py` → `ir/memory/sram.md` (to check)
-- [ ] `ir/module/base.py` → `ir/module/base.md` (to check)
-- [ ] `ir/module/downstream.py` → `ir/module/downstream.md` (to check)
-- [ ] `ir/module/external.py` → `ir/module/external.md` (to check)
-- [ ] `ir/module/fsm.py` → `ir/module/fsm.md` (to check)
-- [ ] `ir/module/memorybase.py` → `ir/module/memorybase.md` (to check)
-- [ ] `ir/module/module.py` → `ir/module/module.md` (to check)
-- [ ] `codegen/simulator/_expr/intrinsics.py` → `codegen/simulator/_expr/intrinsics.md` (to check)
-- [ ] `experimental/frontend/downstream.py` → `experimental/frontend/downstream.md` (to check)
-- [ ] `experimental/frontend/factory.py` → `experimental/frontend/factory.md` (to check)
-- [ ] `experimental/frontend/module.py` → `experimental/frontend/module.md` (to check)
-- [ ] `ramulator2/ramulator2.py` → `ramulator2/ramulator2.md` (to check)
-
-### Module-level documentation
-- [ ] `builder.md` (to check)
-- [ ] `codegen/verilog/README.md` (to check)
-- [ ] `experimental/frontend/README.md` (to check)
-- [ ] `experimental/README.md` (to check)
-- [ ] `ir/expr/README.md` (to check)
-- [ ] `ir/memory/README.md` (to check)
-- [ ] `test/README.md` (to check)
-- [ ] `README.md` (to check)
-
----
+## 1. TO CHECK (24 files) - Review existing documentation against new rules
 
 ## 2. TO DOCUMENT (30 files) - Create new documentation
 
 ### Leaf-level files (simple to complex)
-- [ ] `ip/multiply.py` → `ip/multiply.md` (to write)
-- [ ] `codegen/simulator/node_dumper.py` → `codegen/simulator/node_dumper.md` (to write)
-- [ ] `codegen/simulator/utils.py` → `codegen/simulator/utils.md` (to write)
-- [ ] `codegen/verilog/cleanup.py` → `codegen/verilog/cleanup.md` (to write)
-- [ ] `codegen/verilog/rval.py` → `codegen/verilog/rval.md` (to write)
-- [ ] `codegen/verilog/utils.py` → `codegen/verilog/utils.md` (to write)
-- [ ] `codegen/verilog/_expr/arith.py` → `codegen/verilog/_expr/arith.md` (to write)
-- [ ] `codegen/verilog/_expr/array.py` → `codegen/verilog/_expr/array.md` (to write)
-- [ ] `codegen/verilog/_expr/call.py` → `codegen/verilog/_expr/call.md` (to write)
-- [ ] `codegen/verilog/_expr/intrinsics.py` → `codegen/verilog/_expr/intrinsics.md` (to write)
-- [ ] `codegen/simulator/elaborate.py` → `codegen/simulator/elaborate.md` (to write)
-- [ ] `codegen/verilog/design.py` → `codegen/verilog/design.md` (to write)
-- [ ] `codegen/verilog/module.py` → `codegen/verilog/module.md` (to write)
-- [ ] `codegen/verilog/system.py` → `codegen/verilog/system.md` (to write)
-- [ ] `codegen/verilog/testbench.py` → `codegen/verilog/testbench.md` (to write)
-- [ ] `codegen/verilog/top.py` → `codegen/verilog/top.md` (to write)
-- [ ] `codegen/verilog/elaborate.py` → `codegen/verilog/elaborate.md` (to write)
-- [ ] `codegen/simulator/simulator.py` → `codegen/simulator/simulator.md` (to write)
-- [ ] `codegen/impl.py` → `codegen/impl.md` (to write)
-- [ ] `frontend.py` → `frontend.md` (to write)
-- [ ] `backend.py` → `backend.md` (to write)
 
 ### Module initialization files (leaf to parent)
 - [ ] `codegen/simulator/_expr/__init__.py` → `codegen/simulator/_expr/__init__.md` (to write)
@@ -78,11 +29,38 @@
 - [ ] `codegen/__init__.py` → `codegen/__init__.md` (to write)
 - [ ] `__init__.py` → `__init__.md` (to write)
 
+## 2.5 Check Module Documentation When Modules Fully Documented
+
+- [ ] `builder.md` (to check)
+- [ ] `codegen/verilog/README.md` (to check)
+- [ ] `experimental/frontend/README.md` (to check)
+- [ ] `experimental/README.md` (to check)
+- [ ] `ir/expr/README.md` (to check)
+- [ ] `ir/memory/README.md` (to check)
+- [ ] `test/README.md` (to check)
+- [ ] `README.md` (to check)
+
 ---
 
-## 3. DONE (16 files) - Completed documentation
+## 3. DONE (23 files) - Completed documentation
 
-### Leaf-level files (simple to complex)
+- [x] `ip/multiply.py` → `ip/multiply.md` (completed)
+- [x] `codegen/simulator/elaborate.py` → `codegen/simulator/elaborate.md` (completed)
+- [x] `codegen/simulator/node_dumper.py` → `codegen/simulator/node_dumper.md` (completed)
+- [x] `codegen/simulator/utils.py` → `codegen/simulator/utils.md` (completed)
+- [x] `codegen/simulator/simulator.py` → `codegen/simulator/simulator.md` (completed)
+- [x] `frontend.py` → `frontend.md` (completed)
+- [x] `backend.py` → `backend.md` (completed)
+- [x] `ramulator2/ramulator2.py` → `ramulator2/ramulator2.md` (completed)
+- [x] `experimental/frontend/downstream.py` → `experimental/frontend/downstream.md` (completed)
+- [x] `experimental/frontend/factory.py` → `experimental/frontend/factory.md` (completed)
+- [x] `experimental/frontend/module.py` → `experimental/frontend/module.md` (completed)
+- [x] `codegen/simulator/_expr/intrinsics.py` → `codegen/simulator/_expr/intrinsics.md` (completed)
+- [x] `ir/module/base.py` → `ir/module/base.md` (completed)
+- [x] `ir/module/downstream.py` → `ir/module/downstream.md` (completed)
+- [x] `ir/module/external.py` → `ir/module/external.md` (completed)
+- [x] `ir/module/fsm.py` → `ir/module/fsm.md` (completed)
+- [x] `ir/module/module.py` → `ir/module/module.md` (completed)
 - [x] `ir/expr/expr.py` → `ir/expr/expr.md` (completed)
 - [x] `ir/expr/intrinsic.py` → `ir/expr/intrinsic.md` (completed)
 - [x] `ir/expr/writeport.py` → `ir/expr/writeport.md` (completed)
@@ -107,6 +85,23 @@
 - [x] `ir/const.py` → `ir/const.md` (completed)
 - [x] `ir/dtype.py` → `ir/dtype.md` (completed)
 - [x] `ir/value.py` → `ir/value.md` (completed)
+- [x] `ir/memory/base.py` → `ir/memory/base.md` (completed)
+- [x] `ir/memory/dram.py` → `ir/memory/dram.md` (completed)
+- [x] `ir/memory/sram.py` → `ir/memory/sram.md` (completed)
+- [x] `codegen/impl.py` → `codegen/impl.md` (completed)
+- [x] `codegen/verilog/cleanup.py` → `codegen/verilog/cleanup.md` (completed)
+- [x] `codegen/verilog/rval.py` → `codegen/verilog/rval.md` (completed)
+- [x] `codegen/verilog/utils.py` → `codegen/verilog/utils.md` (completed)
+- [x] `codegen/verilog/_expr/arith.py` → `codegen/verilog/_expr/arith.md` (completed)
+- [x] `codegen/verilog/_expr/array.py` → `codegen/verilog/_expr/array.md` (completed)
+- [x] `codegen/verilog/_expr/call.py` → `codegen/verilog/_expr/call.md` (completed)
+- [x] `codegen/verilog/_expr/intrinsics.py` → `codegen/verilog/_expr/intrinsics.md` (completed)
+- [x] `codegen/verilog/design.py` → `codegen/verilog/design.md` (completed)
+- [x] `codegen/verilog/module.py` → `codegen/verilog/module.md` (completed)
+- [x] `codegen/verilog/system.py` → `codegen/verilog/system.md` (completed)
+- [x] `codegen/verilog/testbench.py` → `codegen/verilog/testbench.md` (completed)
+- [x] `codegen/verilog/top.py` → `codegen/verilog/top.md` (completed)
+- [x] `codegen/verilog/elaborate.py` → `codegen/verilog/elaborate.md` (completed)
 
 ---
 
@@ -114,9 +109,9 @@
 
 ### Statistics
 - **Total Python files**: 74
-- **Files to check**: 22 (30%)
-- **Files to document**: 30 (41%)
-- **Files completed**: 24 (32%)
+- **Files to check**: 9 (12%)
+- **Files to document**: 16 (22%)
+- **Files completed**: 53 (72%)
 
 ### Workflow Notes
 - **Order**: Work from leaf to parent, simple to complex
