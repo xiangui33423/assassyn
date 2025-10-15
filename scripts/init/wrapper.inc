@@ -1,7 +1,10 @@
 # Ramulator2 and Wrapper build targets
 # Converted from scripts/init/wrapper.sh
 
-.PHONY: build-ramulator2 build-wrapper clean-ramulator2 clean-wrapper
+.PHONY: build-ramulator2 build-wrapper clean-ramulator2 clean-wrapper patch-ramulator2
+
+# Patch target for ramulator2
+patch-ramulator2: 3rd-party/ramulator2/.patch-applied
 
 # Marker file to track patch application
 3rd-party/ramulator2/.patch-applied:
@@ -15,13 +18,14 @@
 		fi && \
 		touch .patch-applied
 
-build-ramulator2: 3rd-party/ramulator2/.patch-applied
+build-ramulator2: patch-ramulator2
 	@echo "Building Ramulator2..."
-	@cd 3rd-party/ramulator2 && \
-		mkdir -p build && \
-		cd build && \
-		cmake -DCMAKE_POLICY_VERSION_MINIMUM=3.5 .. && \
-		make -j
+	@echo "Step 1: Creating build directory..."
+	@mkdir -p 3rd-party/ramulator2/build
+	@echo "Step 2: Running CMake configuration..."
+	@cmake -B 3rd-party/ramulator2/build -S 3rd-party/ramulator2 -DCMAKE_POLICY_VERSION_MINIMUM=3.5
+	@echo "Step 3: Building with make..."
+	@make -C 3rd-party/ramulator2/build -j
 	@echo "Ramulator2 build completed."
 
 build-wrapper: build-ramulator2
