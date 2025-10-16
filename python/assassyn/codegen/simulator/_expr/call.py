@@ -13,7 +13,7 @@ from ..utils import fifo_name
 from ..node_dumper import dump_rval_ref
 
 
-def codegen_async_call(node: AsyncCall, module_ctx, sys):
+def codegen_async_call(node: AsyncCall, module_ctx):
     """Generate code for async call operations."""
     bind = node.bind
     event_q = f"{namify(bind.callee.name)}_event"
@@ -23,7 +23,7 @@ def codegen_async_call(node: AsyncCall, module_ctx, sys):
             }}"""
 
 
-def codegen_fifo_pop(node: FIFOPop, module_ctx, sys):
+def codegen_fifo_pop(node: FIFOPop, module_ctx):
     """Generate code for FIFO pop operations."""
     fifo = node.fifo
     fifo_id = fifo_name(fifo)
@@ -39,11 +39,11 @@ def codegen_fifo_pop(node: FIFOPop, module_ctx, sys):
             }}"""
 
 
-def codegen_fifo_push(node: FIFOPush, module_ctx, sys):
+def codegen_fifo_push(node: FIFOPush, module_ctx):
     """Generate code for FIFO push operations."""
     fifo = node.fifo
     fifo_id = fifo_name(fifo)
-    value = dump_rval_ref(module_ctx, sys, node.val)
+    value = dump_rval_ref(module_ctx, node.val)
     module_name = module_ctx.name
 
     return f"""{{
@@ -53,6 +53,6 @@ def codegen_fifo_push(node: FIFOPush, module_ctx, sys):
             }}"""
 
 
-def codegen_bind(node: Bind, module_ctx, sys):
+def codegen_bind(node: Bind, module_ctx):
     """Generate code for bind operations."""
     return "()"
