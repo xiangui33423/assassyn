@@ -1,16 +1,19 @@
-'''The untilities for the project'''
+"""Utility functions and decorators for Assassyn."""
 
-# import timeit
+# Standard library imports
 import os
 import subprocess
 import sys
 import re
 
+# Local imports
+from .enforce_type import enforce_type, validate_arguments, check_type
+
 def identifierize(obj):
     '''The helper function to get the identifier of the given object. You can change `id_slice`
-    to tune the length of the identifier. The default is slice(-5:-1).'''
+    to tune the length of the identifier. The default is slice(-6:-1).'''
     # pylint: disable=import-outside-toplevel
-    from .builder import Singleton
+    from ..builder import Singleton
     return hex(id(obj))[Singleton.id_slice]
 
 def unwrap_operand(node):
@@ -19,25 +22,38 @@ def unwrap_operand(node):
     This is a helper function to get the operand from the node.
     """
     # pylint: disable=import-outside-toplevel
-    from .ir.expr import Operand
+    from ..ir.expr import Operand
     if isinstance(node, Operand):
         return node.value
     return node
 
-PATH_CACHE = None
-VERILATOR_CACHE = None
+PATH_CACHE: str | None = None
+VERILATOR_CACHE: str | None = None
 
-def repo_path():
-    '''Get the path to assassyn repository'''
+def repo_path() -> str:
+    """Get the path to assassyn repository.
+    
+    Returns:
+        str: Path to the repository root
+        
+    Raises:
+        EnvironmentError: If ASSASSYN_HOME environment variable is not set
+    """
     # pylint: disable=global-statement
     global PATH_CACHE
     if PATH_CACHE is None:
-        PATH_CACHE = os.environ['ASSASSYN_HOME']
+        try:
+            PATH_CACHE = os.environ['ASSASSYN_HOME']
+        except KeyError as e:
+            raise EnvironmentError(
+                "ASSASSYN_HOME environment variable not set. "
+                "Please run 'source setup.sh' first."
+            ) from e
     return PATH_CACHE
 
-def package_path():
-    '''Get the path to this python package'''
-    return repo_path() + '/python/assassyn'
+def package_path() -> str:
+    """Get the path to this python package."""
+    return os.path.join(repo_path(), 'python', 'assassyn')
 
 def _cmd_wrapper(cmd):
     env = os.environ.copy()
@@ -132,9 +148,15 @@ def has_verilator():
         VERILATOR_CACHE = 'verilator'
     return VERILATOR_CACHE
 
-def create_and_clean_dir(dir_path: str):
-    """Create a directory and clear its contents if it already exists."""
-    # Create the directory
+def create_dir(dir_path: str) -> None:
+    """Create a directory if it doesn't exist.
+    
+    Args:
+        dir_path: Path to the directory to create
+        
+    Raises:
+        OSError: If directory creation fails due to permissions or disk space
+    """
     os.makedirs(dir_path, exist_ok=True)
 
 def namify(name: str) -> str:
@@ -143,3 +165,12 @@ def namify(name: str) -> str:
     This matches the Rust function in src/backend/simulator/utils.rs
     """
     return ''.join(c if c.isalnum() or c == '_' else '_' for c in name)
+
+__all__ = [
+    # Type enforcement utilities
+    'enforce_type', 'validate_arguments', 'check_type',
+    # Existing utilities
+    'identifierize', 'unwrap_operand', 'repo_path', 'package_path',
+    'patch_fifo', 'run_simulator', 'run_verilator', 'parse_verilator_cycle',
+    'parse_simulator_cycle', 'has_verilator', 'create_dir', 'namify'
+]

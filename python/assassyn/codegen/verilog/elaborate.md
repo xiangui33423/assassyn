@@ -2,6 +2,20 @@
 
 This module provides the main elaboration function for Verilog code generation, orchestrating the complete process of converting Assassyn IR into synthesizable Verilog code with testbenches, external module integration, SRAM blackbox emission, and resource file management.
 
+## Design Documents
+
+- [Simulator Design](../../../docs/design/internal/simulator.md) - Simulator design and code generation
+- [Pipeline Architecture](../../../docs/design/internal/pipeline.md) - Credit-based pipeline system
+- [External SystemVerilog Integration](../../../docs/design/external/ExternalSV_zh.md) - External module integration
+- [Architecture Overview](../../../docs/design/arch/arch.md) - Overall system architecture
+
+## Related Modules
+
+- [Verilog Design Generation](./design.md) - Core Verilog design generation
+- [Verilog Top Generation](./top.md) - Top-level module generation
+- [Simulator Generation](../simulator/simulator.md) - Simulator code generation
+- [Module Generation](../simulator/modules.md) - Module-to-Rust translation
+
 ## Summary
 
 The Verilog elaboration module is the main entry point for Verilog code generation, coordinating the complete process of converting an Assassyn system into synthesizable Verilog code. It handles design generation, testbench creation, external module integration, SRAM blackbox generation, alias resource synthesis, and general resource file management.
@@ -85,7 +99,7 @@ The generated wrappers provide a behavioural memory model suitable for simulatio
 The module uses several utility functions:
 
 - `extract_sram_params()` from [utils module](/python/assassyn/codegen/verilog/utils.md) for SRAM parameter extraction
-- `create_and_clean_dir()` from [utils module](/python/assassyn/utils.md) for directory management
+- `create_dir()` from [utils module](/python/assassyn/utils.md) for directory management
 - `repo_path()` from [utils module](/python/assassyn/utils.md) for repository path resolution
 - `generate_design()` from [design module](/python/assassyn/codegen/verilog/design.md) for main design generation
 - `generate_testbench()` from [testbench module](/python/assassyn/codegen/verilog/testbench.md) for testbench generation

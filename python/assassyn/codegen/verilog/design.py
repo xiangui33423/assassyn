@@ -2,8 +2,9 @@
 # pylint: disable=no-member
 """Verilog design generation and code dumping."""
 
-from typing import List, Dict, Tuple
+from typing import List, Dict, Tuple, Union
 from collections import defaultdict
+from pathlib import Path
 
 from .utils import (
     HEADER,
@@ -23,6 +24,7 @@ from ...ir.const import Const
 from ...ir.array import Array
 from ...ir.dtype import RecordValue
 from ...utils import namify, unwrap_operand
+from ...utils.enforce_type import enforce_type
 from ...ir.expr import (
     Expr,
     FIFOPop,
@@ -78,6 +80,9 @@ class CIRCTDumper(Visitor):  # pylint: disable=too-many-instance-attributes,too-
         self.finish_body = []
         self.finish_conditions = []
         self.array_write_port_mapping = {}
+        self.array_read_port_mapping = {}
+        self.array_read_ports = {}
+        self.array_read_expr_port = {}
         self.sram_payload_arrays = set()
         self.memory_defs = set()
         self.expr_to_name = {}
@@ -312,10 +317,13 @@ class CIRCTDumper(Visitor):  # pylint: disable=too-many-instance-attributes,too-
         array = node
         size = array.size
         dtype = array.scalar_ty
-        index_bits = array.index_bits if array.index_bits > 0 else 1
+        index_bits = array.index_bits
+        index_bits_type = index_bits if index_bits > 0 else 1
 
         writers = list(array.get_write_ports().keys())
         num_write_ports = len(writers)
+        read_ports = self.array_read_ports.get(array, [])
+        num_read_ports = len(read_ports)
 
         dim_type = f"dim({dump_type(dtype)}, {size})"
         class_name = namify(array.name)
@@ -329,11 +337,17 @@ class CIRCTDumper(Visitor):  # pylint: disable=too-many-instance-attributes,too-
         for i in range(num_write_ports):
             port_suffix = f"_port{i}"
             self.append_code(f'w{port_suffix} = Input(Bits(1))')
-            self.append_code(f'widx{port_suffix} = Input(Bits({index_bits}))')
+            self.append_code(f'widx{port_suffix} = Input(Bits({index_bits_type}))')
             self.append_code(f'wdata{port_suffix} = Input({dump_type(dtype)})')
             self.append_code('')
 
-        self.append_code(f'q_out = Output({dim_type})')
+        for i in range(num_read_ports):
+            port_suffix = f"_port{i}"
+            if index_bits > 0:
+                self.append_code(f'ridx{port_suffix} = Input(Bits({index_bits_type}))')
+            self.append_code(f'rdata{port_suffix} = Output({dump_type(dtype)})')
+            self.append_code('')
+
         self.append_code('')
         self.append_code('@generator')
         self.append_code('def construct(self):')
@@ -364,7 +378,7 @@ class CIRCTDumper(Visitor):  # pylint: disable=too-many-instance-attributes,too-
                 self.append_code(
                     f'if_write_port{port_idx} = '
                     f'(self.w{port_suffix} & '
-                    f'(self.widx{port_suffix} == Bits({index_bits})(i)))'
+                    f'(self.widx{port_suffix} == Bits({index_bits_type})(i)))'
                 )
                 self.append_code(
                     f'element_value = Mux(if_write_port{port_idx}, '
@@ -376,7 +390,17 @@ class CIRCTDumper(Visitor):  # pylint: disable=too-many-instance-attributes,too-
         else:
             self.append_code('next_data = data_reg')
         self.append_code('data_reg.assign(next_data)')
-        self.append_code('self.q_out = data_reg')
+
+        for port_idx in range(num_read_ports):
+            port_suffix = f"_port{port_idx}"
+            if index_bits > 0:
+                self.append_code(
+                    f'self.rdata{port_suffix} = data_reg[self.ridx{port_suffix}]'
+                )
+            else:
+                self.append_code(
+                    f'self.rdata{port_suffix} = data_reg[0]'
+                )
 
         self.indent -= 8
         self.append_code('')
@@ -422,16 +446,17 @@ class CIRCTDumper(Visitor):  # pylint: disable=too-many-instance-attributes,too-
         self.append_code('')
 
     def _connect_array(self, arr):
-        """Connect each array to its writers"""
+        """Connect each array to its writers and readers."""
         arr_name = namify(arr.name)
-        port_mapping = self.array_write_port_mapping.get(arr, {})
-        if not port_mapping:
+        write_mapping = self.array_write_port_mapping.get(arr, {})
+        read_mapping = self.array_read_port_mapping.get(arr, {})
+        if not write_mapping and not read_mapping:
             return
 
-        self.append_code(f'# Multi-port connections for {arr_name}')
+        self.append_code(f'# Connections for array {arr_name}')
 
-        # Connect each module to its dedicated port
-        for module, port_idx in port_mapping.items():
+        # Connect writer modules to their dedicated ports.
+        for module, port_idx in write_mapping.items():
             module_name = namify(module.name)
             port_suffix = f"_port{port_idx}"
 
@@ -454,10 +479,22 @@ class CIRCTDumper(Visitor):  # pylint: disable=too-many-instance-attributes,too-
                     f'aw_{arr_name}_widx{port_suffix}.assign(Bits(1)(0))'
                 )
 
+        # Connect read address signals from modules into the array writer.
+        if arr.index_bits > 0:
+            for module, port_indices in read_mapping.items():
+                module_name = namify(module.name)
+                for port_idx in port_indices:
+                    port_suffix = f"_port{port_idx}"
+                    self.append_code(
+                        f'aw_{arr_name}_ridx{port_suffix}.assign('
+                        f'inst_{module_name}.{arr_name}_ridx{port_suffix})'
+                    )
 
-def generate_design(fname: str, sys: SysBuilder):
+
+@enforce_type
+def generate_design(fname: Union[str, Path], sys: SysBuilder) -> None:
     """Generate a complete Verilog design file for the system."""
-    with open(fname, 'w', encoding='utf-8') as fd:
+    with open(str(fname), 'w', encoding='utf-8') as fd:
         fd.write(HEADER)
 
         dumper = CIRCTDumper()

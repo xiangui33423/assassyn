@@ -4,6 +4,20 @@ This module generates Rust code for intrinsic operations in the simulator backen
 
 For the broader context of intrinsics in the DSL, see [intrinsics.md](../../../docs/design/lang/intrinsics.md). For the credit-based pipeline architecture, see [arch.md](../../../docs/design/arch/arch.md).
 
+## Design Documents
+
+- [Intrinsics Design](../../../docs/design/lang/intrinsics.md) - Intrinsic operations design
+- [Simulator Design](../../../docs/design/internal/simulator.md) - Simulator design and code generation
+- [Pipeline Architecture](../../../docs/design/internal/pipeline.md) - Credit-based pipeline system
+- [Architecture Overview](../../../docs/design/arch/arch.md) - Overall system architecture
+
+## Related Modules
+
+- [Simulator Generation](../simulator.md) - Core simulator generation logic
+- [Simulator Elaboration](../elaborate.md) - Main entry point for simulator generation
+- [Module Generation](../modules.md) - Module-to-Rust translation
+- [Node Dumper](../node_dumper.md) - IR node reference generation
+
 ## Summary
 
 This module handles code generation for two categories of intrinsic operations:
@@ -13,6 +27,34 @@ This module handles code generation for two categories of intrinsic operations:
 
 The module uses dispatch tables to map intrinsic opcodes to their corresponding code generation functions, translating high-level intrinsic operations into Rust code that interfaces with the simulator runtime.
 
+**Module Naming Clarification:** The intrinsic operations use specific naming conventions:
+
+1. **Legacy "Module" Naming**: Some intrinsics use legacy "Module" naming (e.g., `MEM_READ`, `MEM_WRITE`)
+2. **Credit System Context**: In the credit-based pipeline context, these are actually pipeline stages
+3. **Naming Consistency**: The naming should be consistent with the credit-based pipeline architecture
+4. **Future Refactoring**: Consider renaming to reflect pipeline stage terminology
+
+**Memory Response Data Format:** The intrinsic operations handle memory response data in specific formats:
+
+1. **Response Buffer Format**: Memory responses are stored in response buffers
+2. **Data Extraction**: Data is extracted from response buffers using specific patterns
+3. **Format Verification**: The format should be verified against the memory system design
+4. **Type Consistency**: Response data types should be consistent across operations
+
+**Unsafe Rust Code Generation:** The intrinsic operations generate unsafe Rust code:
+
+1. **Unsafe Blocks**: Some operations require unsafe Rust code blocks
+2. **Memory Safety**: Unsafe operations must maintain memory safety
+3. **Documentation**: Unsafe code patterns should be documented
+4. **Error Handling**: Unsafe operations require proper error handling
+
+**Error Handling Strategy:** The intrinsic operations implement error handling strategies:
+
+1. **Unsupported Intrinsics**: Unsupported intrinsics raise appropriate errors
+2. **Type Validation**: Type validation errors are handled gracefully
+3. **Runtime Errors**: Runtime errors are propagated appropriately
+4. **Recovery**: Error recovery strategies are implemented where possible
+
 ---
 
 ## Exposed Interfaces
@@ -20,7 +62,7 @@ The module uses dispatch tables to map intrinsic opcodes to their corresponding 
 ### `codegen_pure_intrinsic`
 
 ```python
-def codegen_pure_intrinsic(node: PureIntrinsic, module_ctx, sys) -> str
+def codegen_pure_intrinsic(node: PureIntrinsic, module_ctx) -> str
 ```
 
 Generates Rust code for pure intrinsic operations that inspect simulator state without side effects.
@@ -28,7 +70,6 @@ Generates Rust code for pure intrinsic operations that inspect simulator state w
 **Parameters:**
 - `node: PureIntrinsic` - The pure intrinsic node to generate code for
 - `module_ctx` - Module context containing naming and type information
-- `sys` - System context for simulator state access
 
 **Returns:**
 - `str` - Generated Rust code string, or `None` if intrinsic is not supported
@@ -39,7 +80,7 @@ This function dispatches to the appropriate code generation function based on th
 ### `codegen_intrinsic`
 
 ```python
-def codegen_intrinsic(node: Intrinsic, module_ctx, sys, **kwargs) -> str
+def codegen_intrinsic(node: Intrinsic, module_ctx) -> str
 ```
 
 Generates Rust code for side-effecting intrinsic operations that control execution flow and perform memory operations.
@@ -47,14 +88,12 @@ Generates Rust code for side-effecting intrinsic operations that control executi
 **Parameters:**
 - `node: Intrinsic` - The intrinsic node to generate code for
 - `module_ctx` - Module context containing naming and type information
-- `sys` - System context for simulator state access
-- `**kwargs` - Additional keyword arguments passed to code generation functions
 
 **Returns:**
 - `str` - Generated Rust code string, or `None` if intrinsic is not supported
 
 **Explanation:**
-This function dispatches to the appropriate code generation function based on the intrinsic's opcode. Side-effecting intrinsics include execution control (`wait_until`, `finish`, `assert`), memory operations (`send_read_request`, `send_write_request`), and synchronization primitives (`barrier`). The generated code may modify simulator state or control execution flow. Handler functions receive the same `**kwargs` forwarded by the caller, allowing future extensions to thread additional context without changing the dispatch interface. If an opcode is not implemented the dispatcher returns `None`, signalling the caller to handle or report the unsupported intrinsic.
+This function dispatches to the appropriate code generation function based on the intrinsic's opcode. Side-effecting intrinsics include execution control (`wait_until`, `finish`, `assert`), memory operations (`send_read_request`, `send_write_request`), and synchronization primitives (`barrier`). The generated code may modify simulator state or control execution flow. If an opcode is not implemented the dispatcher returns `None`, signalling the caller to handle or report the unsupported intrinsic.
 
 ---
 
@@ -97,7 +136,7 @@ Maps side-effecting intrinsic opcodes to their corresponding code generation fun
 #### `_codegen_fifo_peek`
 
 ```python
-def _codegen_fifo_peek(node, module_ctx, sys, **_kwargs) -> str
+def _codegen_fifo_peek(node, module_ctx, **_kwargs) -> str
 ```
 
 Generates code to peek at the front value of a FIFO without removing it.
@@ -107,7 +146,7 @@ Generates code to peek at the front value of a FIFO without removing it.
 #### `_codegen_fifo_valid`
 
 ```python
-def _codegen_fifo_valid(node, module_ctx, sys, **_kwargs) -> str
+def _codegen_fifo_valid(node, module_ctx, **_kwargs) -> str
 ```
 
 Generates code to check if a FIFO is not empty.
@@ -119,7 +158,7 @@ Generates code to check if a FIFO is not empty.
 #### `_codegen_value_valid`
 
 ```python
-def _codegen_value_valid(node, module_ctx, sys, **_kwargs) -> str
+def _codegen_value_valid(node, module_ctx, **_kwargs) -> str
 ```
 
 Generates code to check if a signal's value is valid (Some).
@@ -129,7 +168,7 @@ Generates code to check if a signal's value is valid (Some).
 #### `_codegen_module_triggered`
 
 ```python
-def _codegen_module_triggered(node, module_ctx, sys, **_kwargs) -> str
+def _codegen_module_triggered(node, module_ctx, **_kwargs) -> str
 ```
 
 Generates code to check if a module was triggered in the current cycle.
@@ -141,7 +180,7 @@ Generates code to check if a module was triggered in the current cycle.
 #### `_codegen_has_mem_resp`
 
 ```python
-def _codegen_has_mem_resp(node, module_ctx, sys, **_kwargs) -> str
+def _codegen_has_mem_resp(node, module_ctx, **_kwargs) -> str
 ```
 
 Generates code to check if memory has a pending response.
@@ -151,7 +190,7 @@ Generates code to check if memory has a pending response.
 #### `_codegen_get_mem_resp`
 
 ```python
-def _codegen_get_mem_resp(node, module_ctx, sys, **_kwargs) -> str
+def _codegen_get_mem_resp(node, module_ctx, **_kwargs) -> str
 ```
 
 Generates code to get memory response data, converting Vec<u8> to BigUint.
@@ -163,7 +202,7 @@ Generates code to get memory response data, converting Vec<u8> to BigUint.
 #### `_codegen_wait_until`
 
 ```python
-def _codegen_wait_until(node, module_ctx, sys, **_kwargs) -> str
+def _codegen_wait_until(node, module_ctx, **_kwargs) -> str
 ```
 
 Generates code to pause execution until a condition is true.
@@ -176,7 +215,7 @@ This implements the credit-based pipeline mechanism where modules consume credit
 #### `_codegen_finish`
 
 ```python
-def _codegen_finish(node, module_ctx, sys, **_kwargs) -> str
+def _codegen_finish(node, module_ctx, **_kwargs) -> str
 ```
 
 Generates code to terminate the simulation.
@@ -186,7 +225,7 @@ Generates code to terminate the simulation.
 #### `_codegen_assert`
 
 ```python
-def _codegen_assert(node, module_ctx, sys, **_kwargs) -> str
+def _codegen_assert(node, module_ctx, **_kwargs) -> str
 ```
 
 Generates code to assert a runtime condition.
@@ -196,7 +235,7 @@ Generates code to assert a runtime condition.
 #### `_codegen_barrier`
 
 ```python
-def _codegen_barrier(node, module_ctx, sys, **_kwargs) -> str
+def _codegen_barrier(node, module_ctx, **_kwargs) -> str
 ```
 
 Generates a no-op barrier operation.
@@ -208,7 +247,7 @@ Generates a no-op barrier operation.
 #### `_codegen_send_read_request`
 
 ```python
-def _codegen_send_read_request(node, module_ctx, sys, **_kwargs) -> str
+def _codegen_send_read_request(node, module_ctx, **_kwargs) -> str
 ```
 
 Generates code to send a read request to memory.
@@ -243,7 +282,7 @@ This generates unsafe Rust code that interfaces with the Ramulator2 memory simul
 #### `_codegen_send_write_request`
 
 ```python
-def _codegen_send_write_request(node, module_ctx, sys, **_kwargs) -> str
+def _codegen_send_write_request(node, module_ctx, **_kwargs) -> str
 ```
 
 Generates code to send a write request to memory.

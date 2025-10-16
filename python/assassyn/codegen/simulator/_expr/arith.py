@@ -10,7 +10,7 @@ from ..utils import dtype_to_rust_type
 from ..node_dumper import dump_rval_ref
 
 
-def codegen_binary_op(node: BinaryOp, module_ctx, sys):
+def codegen_binary_op(node: BinaryOp, module_ctx):
     """Generate code for binary operations."""
     binop = BinaryOp.OPERATORS[node.opcode]
 
@@ -28,21 +28,21 @@ def codegen_binary_op(node: BinaryOp, module_ctx, sys):
     # Check if operands are intrinsics and handle them specially
     lhs_code = None
     if hasattr(node.lhs, 'opcode') and hasattr(node.lhs, 'args'):
-        lhs_code = codegen_intrinsic(node.lhs, module_ctx, sys)
+        lhs_code = codegen_intrinsic(node.lhs, module_ctx)
 
     if lhs_code:
         lhs = lhs_code
     else:
-        lhs = dump_rval_ref(module_ctx, sys, node.lhs)
+        lhs = dump_rval_ref(module_ctx, node.lhs)
 
     rhs_code = None
     if hasattr(node.rhs, 'opcode') and hasattr(node.rhs, 'args'):
-        rhs_code = codegen_intrinsic(node.rhs, module_ctx, sys)
+        rhs_code = codegen_intrinsic(node.rhs, module_ctx)
 
     if rhs_code:
         rhs = rhs_code
     else:
-        rhs = dump_rval_ref(module_ctx, sys, node.rhs)
+        rhs = dump_rval_ref(module_ctx, node.rhs)
 
     # Special handling for shift operations with signed values
     if node.opcode == BinaryOp.SHR and node.lhs.dtype.is_signed():
@@ -60,8 +60,8 @@ def codegen_binary_op(node: BinaryOp, module_ctx, sys):
     return f"{lhs} {binop} {rhs}"
 
 
-def codegen_unary_op(node: UnaryOp, module_ctx, sys):
+def codegen_unary_op(node: UnaryOp, module_ctx):
     """Generate code for unary operations."""
-    operand = dump_rval_ref(module_ctx, sys, node.x)
+    operand = dump_rval_ref(module_ctx, node.x)
     uniop = UnaryOp.OPERATORS[node.opcode]
     return f"{uniop}{operand}"

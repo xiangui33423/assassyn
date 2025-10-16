@@ -8,6 +8,7 @@ import platform
 import shlex
 import shutil
 import subprocess
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional
@@ -120,17 +121,38 @@ def _dynamic_lib_suffix() -> str:
 
 
 def _compiler_command() -> List[str]:
+    """Detect and return the appropriate C++ compiler command."""
+    # First, check if CXX environment variable is set
     compiler_env = os.environ.get("CXX")
     if compiler_env:
         tokens = shlex.split(compiler_env)
         if tokens:
             return tokens
-    for candidate in ("clang++", "g++", "c++"):
+    # Try to detect the system's default C++ compiler more intelligently
+    # Check for common compiler environment variables
+    for env_var in ["CXX", "CC"]:
+        if env_var in os.environ:
+            compiler_path = os.environ[env_var]
+            if compiler_path and shutil.which(compiler_path):
+                return [compiler_path]
+    # Fallback to common C++ compilers, but try to be more system-appropriate
+    candidates = []
+    # On macOS, prefer clang++ if available (it's the default)
+    if sys.platform == "darwin":
+        candidates = ["clang++", "g++", "c++"]
+    # On Linux, prefer c++ (generic) then g++, then clang++
+    elif sys.platform.startswith("linux"):
+        candidates = ["c++", "g++", "clang++"]
+    # On other systems, use a generic order
+    else:
+        candidates = ["c++", "g++", "clang++"]
+    for candidate in candidates:
         path = shutil.which(candidate)
         if path:
             return [path]
     raise RuntimeError(
-        "Unable to locate a C++ compiler. Set the CXX environment variable or install clang++/g++."
+        "Unable to locate a C++ compiler. Please set the CXX environment variable "
+        "or install a C++ compiler (g++, clang++, or c++)."
     )
 
 
@@ -735,7 +757,7 @@ def generate_external_sv_crates(
 
 
 def emit_external_sv_ffis(
-    sys,
+    sys_module,
     config: dict[str, object],
     simulator_path: Path,
     verilator_root: Path,
@@ -744,18 +766,18 @@ def emit_external_sv_ffis(
 
     modules = [
         module
-        for module in getattr(sys, "modules", []) + getattr(sys, "downstreams", [])
+        for module in getattr(sys_module, "modules", []) + getattr(sys_module, "downstreams", [])
         if isinstance(module, ExternalSV)
     ]
 
     if not modules:
         shutil.rmtree(verilator_root, ignore_errors=True)
-        sys._external_ffi_specs = {}  # pylint: disable=protected-access
+        sys_module._external_ffi_specs = {}  # pylint: disable=protected-access
         config["external_ffis"] = []
         return []
 
     ffi_specs = generate_external_sv_crates(modules, simulator_path, verilator_root)
-    sys._external_ffi_specs = {  # pylint: disable=protected-access
+    sys_module._external_ffi_specs = {  # pylint: disable=protected-access
         spec.original_module_name: spec for spec in ffi_specs
     }
     config["external_ffis"] = ffi_specs
