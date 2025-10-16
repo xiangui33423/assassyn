@@ -1,16 +1,19 @@
-'''The untilities for the project'''
+"""Utility functions and decorators for Assassyn."""
 
-# import timeit
+# Standard library imports
 import os
 import subprocess
 import sys
 import re
 
+# Local imports
+from .enforce_type import enforce_type, validate_arguments, check_type
+
 def identifierize(obj):
     '''The helper function to get the identifier of the given object. You can change `id_slice`
     to tune the length of the identifier. The default is slice(-6:-1).'''
     # pylint: disable=import-outside-toplevel
-    from .builder import Singleton
+    from ..builder import Singleton
     return hex(id(obj))[Singleton.id_slice]
 
 def unwrap_operand(node):
@@ -19,7 +22,7 @@ def unwrap_operand(node):
     This is a helper function to get the operand from the node.
     """
     # pylint: disable=import-outside-toplevel
-    from .ir.expr import Operand
+    from ..ir.expr import Operand
     if isinstance(node, Operand):
         return node.value
     return node
@@ -162,3 +165,12 @@ def namify(name: str) -> str:
     This matches the Rust function in src/backend/simulator/utils.rs
     """
     return ''.join(c if c.isalnum() or c == '_' else '_' for c in name)
+
+__all__ = [
+    # Type enforcement utilities
+    'enforce_type', 'validate_arguments', 'check_type',
+    # Existing utilities
+    'identifierize', 'unwrap_operand', 'repo_path', 'package_path',
+    'patch_fifo', 'run_simulator', 'run_verilator', 'parse_verilator_cycle',
+    'parse_simulator_cycle', 'has_verilator', 'create_dir', 'namify'
+]
