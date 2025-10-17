@@ -44,7 +44,7 @@ def build_and_show_ir(module_class, system_name, *args):
 
 
 def generate_and_show_verilog(sys_build, show_keywords=None):
-    """生成并显示顶层模块的 Verilog (PyCDE 形式)"""
+    """Generate and display top-level module Verilog (PyCDE format)"""
     import assassyn
     from assassyn.backend import elaborate
     from assassyn import utils
