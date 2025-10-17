@@ -30,7 +30,7 @@ def run_quietly(func, *args, **kwargs) -> Tuple[str, Optional[str]]:
 
 
 def build_and_show_ir(module_class, system_name, *args):
-    """构建模块并显示 IR"""
+    """Build module and display IR"""
     from assassyn.frontend import SysBuilder
 
     sys_build = SysBuilder(system_name)
