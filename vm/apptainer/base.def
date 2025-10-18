@@ -13,15 +13,16 @@ From: rust:1.82
         cmake ninja-build cargo \
         && apt-get clean && rm -rf /var/lib/apt/lists/*
 
+%runscript
+    exec "\$@"
 
-    # Set up environment variables
-    export PYTHONUSERBASE="/app/.local"
-    export CCACHE_DIR="/tmp/ccache"
-    export CARGO_HOME="/tmp/cargo"
-
-%environment
-    export PYTHONUSERBASE="/app/.local"
-    export CCACHE_DIR="/tmp/ccache"
-    export CARGO_HOME="/tmp/cargo"
-    export CC="ccache gcc"
-    export CXX="ccache g++"
+%test
+    #!/bin/zsh
+    echo "=== Testing base container ==="
+    echo "Checking Rust installation..."
+    rustc --version
+    echo "Checking Python installation..."
+    python3 --version
+    echo "Checking Git installation..."
+    git --version
+    echo "Base container test completed."

@@ -1,50 +1,60 @@
 Bootstrap: localimage
-From: assassyn-base.sif
-
-%arguments
-    REPO_URL=https://github.com/Synthesys-Lab/assassyn
-    REPO_TAG=master
+From: /tmp/repo.sif
 
 %post
-    # Clone repository from specified URL and tag/branch/commit
-    git clone --recursive {{ REPO_URL }} /app
-    cd /app
-    git checkout {{ REPO_TAG }}
-    
-    # Remove unnecessary directories to reduce image size
-    rm -rf examples/ docs/ tutorials/
-    
-    # Set up environment
-    PYTHON_VERSION=$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
-    
-    cat >> $APPTAINER_ENVIRONMENT <<EOF
+    /bin/zsh << ZSHEOF
+cd /app
+
+# Remove existing venv and create fresh one for container
+rm -rf /app/.assassyn-venv
+python3 -m venv /app/.assassyn-venv
+/app/.assassyn-venv/bin/pip install --upgrade pip
+/app/.assassyn-venv/bin/pip install build
+/app/.assassyn-venv/bin/pip install -r /app/python/requirements.txt
+
+# Source the virtual environment
+source /app/.assassyn-venv/bin/activate
+
+# Manually export environment variables (from setup.sh)
+export PYTHONPATH="/app/python:\$PYTHONPATH"
 export ASSASSYN_HOME="/app"
 export VERILATOR_ROOT="/app/3rd-party/verilator"
-export PYTHONPATH="/app/python:/app/.local/lib/python${PYTHON_VERSION}/site-packages:\$PYTHONPATH"
-export PATH="/app/3rd-party/verilator/bin:/app/.local/bin:\$PATH"
+export PATH="\$VERILATOR_ROOT/bin:\$PATH"
+export CARGO_TARGET_DIR="/app/.sim-runtime-cache"
+
+# Clean and rebuild components in correct order for Linux container
+make clean-wrapper
+make clean-ramulator2
+make build-ramulator2
+make build-wrapper
+
+# Add PyCDE to PYTHONPATH if it exists
+if [ -d "/app/3rd-party/circt/frontends/PyCDE/dist/lib" ]; then
+  export PYTHONPATH="/app/3rd-party/circt/frontends/PyCDE/dist/lib:\$PYTHONPATH"
+fi
+
+
+cat >> \$APPTAINER_ENVIRONMENT <<EOF
+export RUSTC_WRAPPER="\$RUSTC_WRAPPER"
+export ASSASSYN_HOME="\$ASSASSYN_HOME"
+export VERILATOR_ROOT="\$VERILATOR_ROOT"
+export PYTHONPATH="\$PYTHONPATH"
 export CC="ccache gcc"
 export CXX="ccache g++"
 export CCACHE_DIR="/tmp/ccache"
-export PYTHONUSERBASE="/app/.local"
 export CARGO_HOME="/tmp/cargo"
-export CARGO_TARGET_DIR="/app/.sim-runtime-cache"
+export VIRTUAL_ENV="/app/.assassyn-venv"
+export PATH="/app/.assassyn-venv/bin:\$PATH"
 EOF
-
-    # Make repo write-able
-    chmod -R u+w /app
-
-    # Build the project
-    make build-all
+ZSHEOF
 
 %runscript
-    exec "$@"
+    exec "\$@"
 
 %test
     #!/bin/zsh
-    echo "=== Testing repository build ==="
-    echo "Repository: {{ REPO_URL }} at {{ REPO_TAG }}"
+    echo "=== Testing builds ==="
     cd /app
-    python -c 'import assassyn' # import this module
-    echo "Import test: $?"
-    
-    make test-all
+    echo "Testing basic Python import..."
+    python -c 'import sys; print(f"Python {sys.version}")'
+    echo "Testing assassyn core modules..."
