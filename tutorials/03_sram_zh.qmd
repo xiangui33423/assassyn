@@ -1,0 +1,376 @@
+---
+title: "Downstream 模块笔记"
+execute:
+  warning: false
+  message: false
+format:
+  html:
+    toc: true
+    toc-depth: 2
+    mermaid:
+      theme: default         # 不用暗色主题
+      themeVariables:
+        clusterBkg: "#f8fafc"      # subgraph 背景
+        clusterBorder: "#cbd5e1"   # subgraph 边框
+        primaryColor: "#ffffff"    # 普通节点底色
+        primaryTextColor: "#0f172a"
+        lineColor: "#475569"
+
+---
+
+# 教程：在 assassyn 中使用 SRAM
+
+> 作者： Yangjia 
+> 
+> 日期： 2025.10.07
+
+## 1. 简介
+
+在本教程中，我们将基于 python/ci-tests/test_sram.py 学习如何在 assassyn 硬件描述框架中实例化并驱动片上 SRAM。我们会从模块拆解、读写时序、初始化文件等角度
+展开说明。
+
+学习目标：
+
+- 了解 SRAM(width, depth, init_file) 的构造方式。
+- 搭建一个驱动器 Driver，在单模块内模拟读写 SRAM。
+- 编写一个下游组合模块 MemUser 读取数据并执行简单运算。
+- 通过 run_test 驱动仿真，并对输出日志进行校验。
+- 理解 init_file 的作用以及如何接入资源目录。
+
+## 2. SRAM 基础
+
+SRAM 是片上存储器的常见形式，提供随机读写能力。与寄存器阵列(RegArray)不同，SRAM 通常具有更大的容量和更复杂的时序要求。
+
+实际上，我们提供了一个可以直接调用的 SRAM 模块。将 SRAM 抽象成为一个 `Downstream` 模块，可以方便地在更高层次进行组合和复用。
+
+
+## 3. 核心代码讲解
+
+仿真系统主要由三个部分组成：
+
+1. MemUser：纯组合逻辑模块，获取 SRAM 读出数据并执行一定的逻辑。
+2. Driver：顶层驱动模块，负责生成地址、控制读写信号，并调用 SRAM。这里由于需要展示 SRAM 的多种特性，因此会给出多种实现。
+3. check：Python 端验证函数，解析日志确认读写正确。
+
+下面按照模块顺序进行拆解。
+
+### 3.0 环境准备
+
+我们沿用前序教程的方式，准备运行所需的依赖和工具：
+```{python}
+import warnings
+warnings.filterwarnings("ignore")
+
+import sys
+import os
+import io
+import contextlib
+from typing import Tuple, Optional
+
+lib_path = os.path.abspath(os.path.join(os.path.dirname("sram.qmd"), '../python/'))
+sys.path.append(lib_path)
+
+# from function_t import run_quietly
+from assassyn.frontend import *
+from assassyn.backend import elaborate, config
+from assassyn.test import run_test
+from assassyn import utils
+from assassyn.ir.module.downstream import Downstream, combinational
+import assassyn
+
+
+print("✅ 环境设置完成")
+```
+
+### 3.1 SRAM 简介
+
+SRAM(width, depth, init_file) 会在对应模块内生成一个片内存储器资源：
+
+- width：数据位宽，决定每个字的大小。
+- depth：深度，表示地址空间大小。
+- init_file：可选的初始化文件路径；缺省为零填充。当提供 init_1.hex 等文件时，将在仿真启动时载入初值。
+
+在仿真框架内，sram.build(we, re, addr, wdata) 负责连接外部信号：
+
+| 信号 | 类型 | 含义 |
+| ---- | ---- | ---- |
+| we | Bits(1) | 写使能，高电平时写入 |
+| re | Bits(1) | 读使能，高电平时读出 |
+| addr | Int(log2(depth)) | 地址输入 |
+| wdata | Bits(width) | 写数据输入 |
+| sram.dout | RegArray | 读数据输出（同步读，一拍后有效） |
+
+> 注意：assassyn 中的 SRAM 提供同步读写接口，读出的数据通过 RegArray 暴露(如果没有读操作，仍然保持上一个读的结果)，需要在下游模块中组合使用。
+
+### 3.2 组合模块：MemUser
+
+MemUser 负责接收来自 SRAM 的读数据，并进行展示：
+
+```{python}
+class MemUser(Module):
+    def __init__(self):
+        super().__init__(ports={})
+
+    @module.combinational
+    def build(self, rdata: RegArray):
+        width = rdata.scalar_ty.bits
+        rdata_val = rdata[0].bitcast(Int(width))
+        k = Int(width)(128)
+        delta = rdata_val + k
+        log('{} + {} = {}', rdata_val, k, delta)
+```
+
+关键点：
+
+- rdata 类型为 RegArray，表示同步读出后锁存的寄存器数组。
+- rdata.scalar_ty.bits 获得数据宽度，支持 32 位、256 位等不同配置。
+- bitcast 将 Bits(width) 转为 Int(width)，以便进行算术。
+- log 输出结果，供 check 函数解析。
+
+### 3.3 顶层驱动：Driver
+
+Driver 模块负责生成地址、控制信号并与 SRAM 对接：
+
+```{python}
+class Driver1(Module):
+    def __init__(self):
+        super().__init__(ports={})
+
+    @module.combinational
+    def build(self, width, init_file, user):
+        cnt = RegArray(Int(width), 1)
+        v = cnt[0]
+
+        we = v[width-1:width-1]
+        re = ~we
+
+        plused = v + Int(width)(1)
+        waddr = plused[0:8]
+        raddr = v[0:8]
+        addr = we.select(waddr, raddr).bitcast(Int(9))
+
+        (cnt & self)[0] <= plused
+
+        sram = SRAM(width, 512, init_file)
+        sram.build(we, re, addr, v.bitcast(Bits(width)))
+
+        user.async_called()
+        return sram
+```
+
+
+```{python}
+class Driver2(Module):
+    def __init__(self):
+        super().__init__(ports={})
+
+    @module.combinational
+    def build(self, width, init_file, user):
+        cnt = RegArray(Int(width), 1)
+        v = cnt[0]
+
+        we = v[0:0]
+        re = ~we
+
+        plused = v + Int(width)(1)
+        waddr = plused[0:8]
+        raddr = v[0:8]
+        addr = we.select(waddr, raddr).bitcast(Int(9))
+
+        (cnt & self)[0] <= plused
+
+        sram = SRAM(width, 512, init_file)
+        sram.build(we, re, addr, v.bitcast(Bits(width)))
+
+        user.async_called()
+        return sram
+```
+
+逐行解析：
+
+- cnt = RegArray(Int(width), 1)：自增计数器，驱动读写数据与地址变化。
+- we = v[0:0]：取计数器最低位作为写使能，偶数拍写入，奇数拍读取。(Driver1 中为最高位，目的是测试只读不写，观察SRAM每一个值的情况)
+- re = ~we：互补读使能，保证每拍不是读就是写。
+- plused：计数器下一拍的值；同时用于写地址和新数据。
+- waddr、raddr：取低 9 位地址，深度 512 对应 9 位索引。
+- addr = we.select(waddr, raddr)：根据使能选择写/读地址，再 bitcast 到整数类型。
+- (cnt & self)[0] <= plused：非阻塞赋值，更新计数器状态。
+- sram.build(...)：将控制信号、写数据连接到 SRAM。
+- user.async_called()：触发下游组合模块在同拍消费 sram.dout。
+- return sram：将 SRAM 句柄返回，方便上层绑定 dout。
+
+#### 3.3.1 地址与时序示意
+
+```{mermaid}
+sequenceDiagram
+autonumber
+participant DR as Driver
+participant SRAM as on-chip SRAM
+participant MU as MemUser
+
+DR->>SRAM: we=1, addr=waddr, wdata=v
+activate SRAM
+Note right of SRAM: t = N 写入
+deactivate SRAM
+
+DR->>SRAM: re=1, addr=raddr
+activate SRAM
+SRAM-->>DR: dout (同步读，t=N+1)
+DR->>MU: async_called(dout)
+MU-->>MU: 组合计算
+deactivate SRAM
+```
+
+
+### 3.4 仿真校验：check
+
+check 函数解析 log 输出，验证读写一致性：
+
+```{python}
+def check(raw):
+    for line in raw.splitlines():
+        if '[memuser' in line:
+            toks = line.split()
+            c = int(toks[-1])
+            b = int(toks[-3])
+            a = int(toks[-5])
+            assert c % 2 == 1 or a == 0, f'Expected odd number or zero, got {line}'
+            assert c == a + b, f'{a} + {b} = {c}'
+```
+
+校验逻辑：
+
+- 读出值 a 与常量 b=128 相加得到 c。
+- 一旦写入开始（a != 0），期望 c 为奇数，验证地址切换与写入频率正确。
+- 确认加法结果精确无误。
+
+———
+
+### 3.5 完整仿真流程
+
+三个测试用例覆盖不同配置：
+
+```{python}
+def run_test_(sys, check, **kwargs):
+    # Set defaults, allow overrides
+    if 'verilog' not in kwargs:
+        kwargs['verilog'] = utils.has_verilator()
+    cfg = config()
+    cfg.update(kwargs)
+
+    simulator_path, verilator_path = elaborate(sys, **cfg)
+    print("simulator_path:", simulator_path)
+    print("verilator_path:", verilator_path)
+    
+    
+    raw = utils.run_simulator(simulator_path)
+    print("仿真输出:")
+    print(raw)
+    check(raw)
+
+    if verilator_path and cfg['verilog']:
+        raw = utils.run_verilator(verilator_path)
+        
+        raw1_str = "\n".join(line for line in raw.splitlines() if "@line:" in line)     
+        print(raw1_str)   
+        check(raw)
+
+
+def test_memory():
+    sys = SysBuilder('memory')
+    with sys:
+        user = MemUser()
+        driver = Driver1()
+        sram = driver.build(32, None, user)
+        user.build(sram.dout)
+ 
+    run_test_(sys, check)
+
+def test_memory_init():
+    sys = SysBuilder('memory_init')
+    resource_base=f'{utils.repo_path()}/python/ci-tests/resources'
+    print(f"资源目录: {resource_base}")
+    with sys:
+        user = MemUser()
+        driver = Driver1()
+        sram = driver.build(32, "init_1.hex", user)
+        user.build(sram.dout)
+
+
+    run_test_(sys, check, resource_base=resource_base)
+
+
+def test_memory_wide():
+    sys = SysBuilder('memory_wide')
+    resource_base=f'{utils.repo_path()}/python/ci-tests/resources'
+    with sys:
+        user = MemUser()
+        driver = Driver1()
+        sram = driver.build(256, None, user)
+        user.build(sram.dout)
+
+    run_test_(sys, check, resource_base=resource_base)
+```
+
+- test_memory：32 位宽，未初始化的 SRAM。
+- test_memory_init：32 位宽，载入 init_1.hex，需指定 resource_base：
+- test_memory_wide：256 位宽，验证高位宽数据通路。
+
+
+1. 构建系统并抽象为中间表示。
+2. 生成仿真器，并运行指定周期数。
+3. 收集 log、wave 等输出。
+4. 调用 check 验证逻辑。
+
+```{python}
+test_memory()
+```
+
+> 观察发现，调取了20次，结果都为0+128=128，符合预期。说明没有指定初始化时，SRAM内容全为0。
+>
+> 下面尝试载入初始化文件：
+> 
+```{python}
+test_memory_init()
+```
+
+> 观察发现，这样初始化后，SRAM内容不再全为0，而是从 init_1.hex 读取的值开始递增。说明 init_file 参数生效。
+> 
+> 与上面的初始化默认为 `0` 形成对比。
+> 
+> 最后尝试更为复杂的读写逻辑 `Driver2`:
+
+```{python}
+test_memory_wide()
+```
+
+> 再默认初始化的情况下，SRAM内容依然从0开始递增，但是为什么每两个时钟自增一次，一次自增2呢？
+> 
+> 这是因为 `Driver2` 中的写使能 `we = v[0:0]` 取的是计数器的最低位，导致偶数拍写入，奇数拍读取。每次写入的数据是 `v`，而 `v` 每拍递增1，因此每两个时钟周期，SRAM 的内容才会增加2。至于读取的值，取决于上一次读到的值，放在 `SRAM` 的 `dout` 中，供下游模块 `MemUser` 使用。
+>
+> 正好 `test_memory_wide` 中的 `MemUser` 也能处理256位宽的数据，请读者自行构造 `resources` 文件夹下的 类似 `init_8.hex` 的文件，观察结果。
+> 
+> hint: 
+> 
+> 1. 目前 `SRAM` 的总大小是 `512bytes` , 一个元素的大小是 `256bits`，因此最多只能存储 `16` 个元素。请不要让资源文件超过这个大小。[More details](https://github.com/Synthesys-Lab/assassyn/blob/master/python/assassyn/ir/memory/sram.md)
+
+
+### 3. 实践要点
+
+- SRAM 输出的 dout 为 RegArray，需通过下游模块或直接在 Driver 内使用 bitcast 转换类型。
+- 写使能与读使能常常互补，确保同一拍只执行一种操作。
+- 地址宽度需根据 depth 计算；这里使用切片 v[0:8] 提取低 9 位。
+- 如果需要在仿真前加载初值，记得设置 resource_base 指向 hex 文件所在目录。
+- 日志校验可以帮助快速定位信号时序错误，例如写入频率不对或地址翻转异常。
+
+———
+
+## 4. 结论与下一步
+
+本教程展示了如何在 assassyn 中：
+
+- 定义并驱动一个同步 SRAM。
+- 通过组合模块消费读出数据。
+- 使用 run_test 管理仿真与验证流程。
+- 利用 init_file 在仿真启动时预置内存内容。
+

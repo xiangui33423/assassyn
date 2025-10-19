@@ -1,0 +1,43 @@
+Bootstrap: localimage
+From: /tmp/base.sif
+
+%files
+    /tmp/repo.tar.gz /tmp/repo.tar.gz
+
+%post
+    cd /
+    tar -xzf /tmp/repo.tar.gz
+    mkdir -p /app
+    cd /app
+    
+    # Extract assassyn main repo archive
+    tar -xzf /assassyn-*.tar.gz --strip-components=1
+    
+    # Extract submodule archives to their correct locations
+    tar -xzf ../3rd-party/ramulator2-*.tar.gz -C 3rd-party/
+    tar -xzf ../3rd-party/circt-*.tar.gz -C 3rd-party/
+    tar -xzf ../3rd-party/verilator-*.tar.gz -C 3rd-party/
+    
+    # Clean up archive files
+    rm -f /assassyn-*.tar.gz
+    rm -f /3rd-party/*-*.tar.gz
+    rm -rf examples/ docs/ tutorials/
+
+%runscript
+    exec "\$@"
+
+%test
+    #!/bin/zsh
+    echo "=== Testing repo container ==="
+    cd /app
+    echo "Checking repository structure..."
+    ls -la
+    echo "Checking submodules..."
+    ls -la 3rd-party/
+    echo "Checking circt submodule..."
+    ls -la 3rd-party/circt/ | head -10
+    echo "Checking verilator submodule..."
+    ls -la 3rd-party/verilator/ | head -10
+    echo "Checking ramulator2 submodule..."
+    ls -la 3rd-party/ramulator2/ | head -10
+    echo "Repo container test completed."
