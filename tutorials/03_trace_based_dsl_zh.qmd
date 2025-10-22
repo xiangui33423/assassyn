@@ -1,0 +1,200 @@
+---
+title: "理解 Assassyn 的 Trace-based DSL"
+format:
+  html:
+    toc: true
+    toc-depth: 3
+
+---
+
+# Tutorial: 理解 Assassyn 的 Trace-based DSL
+
+> **作者:** Yao Wentao
+> **日期:** 2025.10.15
+>
+
+## 1. 引言
+
+Assassyn 采用 **trace-based DSL**（领域特定语言）嵌入在 Python 中。与传统的 parser-based frontend 不同，trace-based DSL 通过**运算符重载**来构建硬件描述的抽象语法树 (AST)。
+
+**核心思想:** 在 tracing 作用域内，`a + b` 不是计算结果，而是创建 `Add` 节点加入 IR。Python 代码的执行过程即 IR 的构建过程。
+
+---
+
+## 2. Python `if` vs Assassyn `Condition`: 核心区别
+
+### 2.1 概念对比
+
+| 特性 | Python `if` | Assassyn `Condition` |
+|------|------------|---------------------|
+| 求值时机 | 编译时 (Python 运行时) | 硬件运行时 |
+| 作用 | 控制 trace 路径,条件编译 | 生成硬件条件逻辑 |
+| 生成硬件 | 不生成,直接选择分支 | 生成 mux 和条件块 |
+| 类比 | C/C++ 的 `#if` 预处理 | Verilog 的 `if` 语句 |
+
+### 2.2 实战对比
+
+```{python}
+#| code-fold: false
+
+import warnings
+warnings.filterwarnings("ignore")
+
+import sys
+import os
+lib_path = os.path.abspath(os.path.join(os.path.dirname("03_trace_based_dsl_zh.qmd"), '../python/'))
+sys.path.append(lib_path)
+from function_t import run_quietly, build_and_show_ir
+
+from assassyn.frontend import *
+from assassyn.backend import elaborate
+from assassyn import utils
+import assassyn
+
+print("✅ 环境配置完成")
+```
+
+#### 示例 1: Python `if` - 条件编译
+
+```{python}
+#| code-fold: false
+
+ENABLE_FEATURE = True
+
+class PythonIfExample(Module):
+    def __init__(self):
+        super().__init__(ports={})
+
+    @module.combinational
+    def build(self):
+        counter = RegArray(UInt(32), 1)
+        counter[0] = counter[0] + UInt(32)(1)
+
+        if ENABLE_FEATURE:
+            result = counter[0] * UInt(32)(2)  # 这个分支被 trace
+        else:
+            result = counter[0] + UInt(32)(10)  # 这个分支不会被 trace
+
+sys1 = build_and_show_ir(PythonIfExample, 'python_if_demo')
+```
+
+**关键观察:** <br>
+- IR 中直接包含 `result = counter * 2`，无条件块 <br>
+- `else` 分支的加法逻辑不存在于 IR 中 <br>
+- 硬件结构在编译时确定
+
+#### 示例 2: Assassyn `Condition` - 硬件条件
+
+```{python}
+#| code-fold: false
+
+class ConditionExample(Module):
+    def __init__(self):
+        super().__init__(ports={})
+
+    @module.combinational
+    def build(self):
+        counter = RegArray(UInt(32), 1)
+        counter[0] = counter[0] + UInt(32)(1)
+
+        enable = counter[0] < UInt(32)(50)  # 硬件信号
+        with Condition(enable):
+            result = counter[0] * UInt(32)(2)
+
+sys2 = build_and_show_ir(ConditionExample, 'condition_demo')
+```
+
+**关键观察:** <br>
+- IR 中包含 `when enable { ... }` 条件块 <br>
+- 所有代码都被 trace，硬件在运行时动态判断
+
+---
+
+## 3. 混合使用示例
+
+```{python}
+#| code-fold: false
+
+# Python 常量 - 用于条件编译
+DEBUG_MODE = True
+MAX_COUNT = 10
+
+class ConditionalCounter(Module):
+    def __init__(self):
+        super().__init__(ports={'enable': Port(Bits(1))})
+
+    @module.combinational
+    def build(self):
+        enable = self.pop_all_ports(True)
+        counter = RegArray(UInt(32), 1)
+
+        # Python if: 编译时决定阈值
+        threshold = UInt(32)(10 if MAX_COUNT == 10 else 20)
+
+        # Assassyn Condition: 运行时判断
+        with Condition(counter[0] < threshold):
+            counter[0] = counter[0] + UInt(32)(1)
+
+        with Condition(enable[0:0]):
+            log("[Runtime] Counter: {}", counter[0])
+
+        # Python if: 条件编译调试信息
+        if DEBUG_MODE:
+            log("[Debug] Counter={}", counter[0])
+
+print("模块定义完成")
+```
+
+### 构建和仿真
+
+```{python}
+# | output-fold: true
+
+# 构建系统
+sys_build = SysBuilder("trace_dsl_demo")
+with sys_build:
+    counter = ConditionalCounter()
+    counter.build()
+
+print(sys_build)
+
+# 配置并生成仿真器
+config = assassyn.backend.config(
+    verilog=utils.has_verilator(),
+    sim_threshold=50,
+    idle_threshold=50,
+    random=False
+)
+
+def generate_and_run():
+    (sim_path, _), _, _ = run_quietly(lambda: elaborate(sys_build, **config))
+    return utils.run_simulator(sim_path)
+
+raw, _, _ = run_quietly(generate_and_run)
+
+print("\n=== 仿真输出 (前 15 行) ===")
+for line in raw.split("\n")[:15]:
+    if line.strip():
+        print(line)
+```
+
+---
+
+## 4. 总结
+
+**核心要点:** <br>
+1. **Trace-based DSL** 通过运算符重载构建 IR <br>
+2. **Python `if`** 在编译时求值，控制 trace 路径（类比 C 的 `#if`）<br>
+3. **Assassyn `Condition`** 生成硬件条件逻辑，在硬件运行时求值（类比 Verilog 的 `if`）<br>
+
+| Assassyn | C/C++ | Verilog | 求值时机 |
+|----------|-------|---------|---------|
+| Python `if` | `#if` | 无 (参数化) | 编译时 |
+| `Condition` | `if` | `if` | 运行时 |
+
+## 5. 进一步阅读
+
+- [docs/design/lang/trace.md](../docs/design/lang/trace.md) - Trace-based DSL 设计文档
+- [docs/design/lang/dsl.md](../docs/design/lang/dsl.md) - DSL 概念总览
+
+---
