@@ -63,7 +63,7 @@ This function generates the complete top-level Verilog module that serves as the
    - **Regular Modules**: Connected to trigger counters and FIFO ports
    - **Downstream Modules**: Connected to dependency signals and external values
    - **SRAM Modules**: Connected to memory interfaces
-   - **External Modules**: Hooked up through helper routines that splice in cross-module wires, apply pending external inputs, and avoid duplicating instantiations
+   - **External Modules**: Hooked up through helper routines that splice in cross-module wires derived from both `module.externals` and the cross-module metadata precomputed during system analysis, and avoid duplicating instantiations
 
 7. **Module Connections**: Creates all inter-module connections:
    - **FIFO Connections**: Push/pop signal routing between modules
@@ -87,9 +87,8 @@ The function handles complex system-wide relationships:
 - **FIFO Depth Configuration**: Analyzes FIFO usage to determine appropriate depths
 - **External Module Integration**: Properly integrates external SystemVerilog modules
   by:
-  - Declaring shared wires once per exposed external value (data + valid)
-  - Queueing assignments per producer so instantiations stay in emission order
-  - Merging per-consumer wiring requirements from `dumper.external_wire_assignments`
+  - Declaring shared wires once per exposed external value (data + valid), using the normalised wire keys emitted by the intrinsic lowering pass
+  - Routing assignments based on the intrinsic-derived `node.externals` list and the additional consumer wiring recorded in `cross_module_external_reads` so instantiations stay in emission order and each producer drives a single pair of signals
 - **Dependency Management**: Handles downstream module dependencies
 - **Credit-based Pipeline**: Implements proper trigger counter and credit management
 
@@ -122,8 +121,6 @@ The function manages several CIRCTDumper state variables:
 - `async_callees`: Async call relationships
 - `array_users`: Array usage mapping
 - `sram_payload_arrays`: SRAM payload arrays
-- `external_wire_assignments`: Deferred cross-module wiring requirements for external IO
-- `external_wire_outputs`: Mapping from external wires to exposed port names
 
 **Project-specific Knowledge Required**:
 - Understanding of [CIRCTDumper state management](/python/assassyn/codegen/verilog/design.md)

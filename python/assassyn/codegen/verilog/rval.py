@@ -4,10 +4,10 @@ from ...ir.module import Module, Port, Wire
 from ...ir.const import Const
 from ...ir.array import Array
 from ...ir.dtype import RecordValue
-from ...ir.expr import Expr, FIFOPop, WireRead
+from ...ir.expr import Expr, FIFOPop
+from ...ir.expr.intrinsic import ExternalIntrinsic
 from ...utils import namify, unwrap_operand
 from .utils import dump_type
-from ._expr.call import register_external_wire_read
 def _dump_fifo_pop(_dumper, node, with_namespace: bool, _module_name: str = None) -> str:
     if not with_namespace:
         return f'self.{namify(node.fifo.name)}'
@@ -75,18 +75,19 @@ def dump_rval(dumper, node, with_namespace: bool, module_name: str = None) -> st
     """
     node = unwrap_operand(node)
 
-    if isinstance(node, WireRead):
-        register_external_wire_read(dumper, node)
-
     # Special case: check for external expressions first
-    if (
-        isinstance(node, Expr)
-        and dumper.current_module is not None
-        and hasattr(dumper.current_module, 'externals')
-        and node in dumper.current_module.externals
-        and not dumper.is_top_generation
-    ):
-        return f"self.{dumper.get_external_port_name(node)}"
+    # Skip ExternalIntrinsic - they should never be accessed as ports
+    if isinstance(node, Expr) and not isinstance(node, ExternalIntrinsic):
+        has_externals = False
+        if dumper.current_module is not None:
+            has_externals = hasattr(dumper.current_module, 'externals')
+        if (
+            dumper.current_module is not None
+            and has_externals
+            and node in dumper.current_module.externals
+            and not dumper.is_top_generation
+        ):
+            return f"self.{dumper.get_external_port_name(node)}"
 
     node_type = type(node)
 
