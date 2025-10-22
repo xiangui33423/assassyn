@@ -1,10 +1,31 @@
 # External Module Utilities
 
-Helper functions in `external.py` provide the simulator generator with the metadata it needs to wire `ExternalSV` blocks into the Rust runtime. The utilities focus on discovering value dependencies, collecting wire assignments, and producing manifest data for Verilator crates.
+Helper functions in `external.py` keep the simulator generator in sync with
+`ExternalSV` modules and the newer `ExternalIntrinsic` expressions. The module
+focuses on two jobs:
+
+1. Tracking which IR values must be cached on the Rust side so downstream code
+   can observe them reliably.
+2. Naming simulator fields for external handles so that code generation remains
+   consistent across passes.
+
+With the migration to `ExternalIntrinsic`, legacy wire-assignment nodes are no
+longer produced, so the helpers concentrate solely on exposure analysis and
+metadata collection.
 
 ## Section 0. Summary
 
-During simulator generation we analyse the elaborated IR to determine what values must be cached, which external modules appear as pure stubs, and which Rust handles should be created. The APIs in this module centralise those analyses so other codegen passes (for example `modules.py` and `verilator.py`) can reuse the same bookkeeping.
+During simulator generation we walk the elaborated IR to discover:
+
+- Which expressions escape their defining module (`collect_module_value_exposures`)
+- Which expressions must have validity bits cached per module (`gather_expr_validities`)
+- Which `ExternalSV` declarations elaborate to real bodies versus stub shells
+  (`has_module_body` / `is_stub_external`)
+- Which `ExternalIntrinsic` instances appear in the design so that Rust fields
+  can be allocated in advance (`collect_external_intrinsics`)
+
+All of these helpers are intentionally lightweight wrappers over existing
+analyses so other simulator passes can share a consistent view of the IR.
 
 ## Section 1. Exposed Interfaces
 
@@ -14,15 +35,9 @@ During simulator generation we analyse the elaborated IR to determine what value
 def external_handle_field(module_name: str) -> str:
 ```
 
-Returns the field name used on the simulator struct to store the FFI handle for a specific `ExternalSV` module. The result is derived from `namify(module_name)` with a `_ffi` suffix.
-
-### `collect_external_wire_reads`
-
-```python
-def collect_external_wire_reads(module: Module) -> Set[Expr]:
-```
-
-Walks a module body and records all `WireRead` expressions that observe outputs of an `ExternalSV`. These reads must trigger value exposure or Rust-side caching to keep combinational outputs coherent.
+Returns the field name used on the simulator struct to store the FFI handle for
+an `ExternalSV` module. The name is derived from `namify(module_name)` followed
+by the `_ffi` suffix.
 
 ### `collect_module_value_exposures`
 
@@ -30,23 +45,9 @@ Walks a module body and records all `WireRead` expressions that observe outputs 
 def collect_module_value_exposures(module: Module) -> Set[Expr]:
 ```
 
-Uses the `expr_externally_used` analysis to find expressions whose results are consumed outside the module. The returned set is merged with wire reads so the simulator knows which computed values must be stored on the shared context.
-
-### `collect_external_value_assignments`
-
-```python
-def collect_external_value_assignments(sys) -> DefaultDict[tuple, List[Tuple[ExternalSV, Wire]]]:
-```
-
-Iterates over all `ExternalSV` downstream modules in the system and groups their input assignments by the IR expression that produces the driving value. The mapping is later used to emit Rust glue that forwards values into the appropriate FFI handle.
-
-### `lookup_external_port`
-
-```python
-def lookup_external_port(external_specs, module_name: str, wire_name: str, direction: str):
-```
-
-Given the manifest dictionary emitted by the Verilator pass, returns the `FFIPort` entry that matches the requested module, wire, and direction. This keeps port-type lookups in one place.
+Runs `expr_externally_used` over a module body and returns the expressions whose
+results are consumed outside the defining module. These expressions are the
+candidates that require caching and validity tracking during simulation.
 
 ### `gather_expr_validities`
 
@@ -54,34 +55,44 @@ Given the manifest dictionary emitted by the Verilator pass, returns the `FFIPor
 def gather_expr_validities(sys) -> Tuple[Set[Expr], Dict[Module, Set[Expr]]]:
 ```
 
-Aggregates every expression that requires simulator-visible caching and produces both the global set and a per-module map. Callers use the result to create validity bits and optional value caches in the generated Rust code.
+Aggregates every expression that needs simulator-visible caching and produces
+both a global set and a per-module map. The caller uses the result when
+declaring `*_value` fields and validity bits on the simulator struct.
 
-### `has_module_body` / `is_stub_external`
+### `has_module_body` and `is_stub_external`
 
 ```python
 def has_module_body(module: Module) -> bool:
 def is_stub_external(module: Module) -> bool:
 ```
 
-Helpers that distinguish fully elaborated modules from placeholder stubs. Downstream passes use them to decide whether an `ExternalSV` can be ignored during Rust code emission.
+Helper predicates that distinguish fully elaborated modules from placeholder
+stubs. They keep downstream passes from generating code for external modules
+that have no synthesized body.
 
-The module also re-exports `iter_wire_assignments`, `collect_external_wire_reads`, and related helpers via `__all__` to keep imports concise.
+### `collect_external_intrinsics`
+
+```python
+def collect_external_intrinsics(sys):
+```
+
+Walks the entire system and returns the `ExternalIntrinsic` instances that are
+present. Simulator code uses this list to allocate per-instance FFI state.
 
 ## Section 2. Internal Helpers
 
-### `_walk_block`
+### `_ModuleValueExposureCollector`
 
-Performs a shallow traversal of nested `Block` structures. The walker is reused by multiple collectors to avoid duplicating block iteration code.
+A thin `Visitor` subclass that records expressions flagged by
+`expr_externally_used`. The collector intentionally reuses the generic block
+traversal logic from `Visitor` to keep the implementation minimal.
 
-### `iter_wire_assignments`
+## Section 3. Design Notes
 
-Depth-first iterator that yields every `WireAssign` inside a block hierarchy. This is how `collect_external_value_assignments` discovers which expressions drive an external input.
+- Legacy helpers for `WireAssign` / `WireRead` were removed alongside the move
+  to `ExternalIntrinsic`-based wiring. External connections are now handled by
+  intrinsic code generation instead of bespoke visitors.
+- The remaining helpers avoid unwrapping operands explicitly; `expr` objects are
+  passed through as-is so other passes can decide how much information they
+  need.
 
-### Helper Pipeline
-
-1. `collect_module_value_exposures` gathers values that escape the module through async calls, array writes, or other externally visible paths.
-2. `collect_external_wire_reads` adds explicit output reads from `ExternalSV` modules.
-3. `gather_expr_validities` merges the previous two sets, recording both the global exposure set and the owning module so the simulator can emit per-module caches and validity bits.
-4. `collect_external_value_assignments` produces the reverse mapping—given an exposed value, which external modules consume it—so Rust glue can drive the correct FFI setters.
-
-This flow ensures simulator code generation has the full picture of cross-module dataflow involving external SystemVerilog black boxes.

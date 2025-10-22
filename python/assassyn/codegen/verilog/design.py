@@ -16,7 +16,6 @@ from .utils import (
 from ...analysis import expr_externally_used
 from ...ir.module import Module, Downstream
 from ...ir.memory.sram import SRAM
-from ...ir.module.external import ExternalSV
 from ...builder import SysBuilder
 from ...ir.visitor import Visitor
 from ...ir.block import Block, CondBlock,CycledBlock
@@ -33,8 +32,8 @@ from ...ir.expr import (
     ArrayWrite,
     FIFOPush,
     AsyncCall,
-    WireRead
 )
+from ...ir.expr.intrinsic import PureIntrinsic, ExternalIntrinsic
 from ._expr import codegen_expr
 from .cleanup import cleanup_post_generation
 from .rval import dump_rval as dump_rval_impl
@@ -91,10 +90,15 @@ class CIRCTDumper(Visitor):  # pylint: disable=too-many-instance-attributes,too-
         self.external_wire_assignments = []
         self.external_wire_assignment_keys = set()
         self.external_wire_outputs = {}
-        self.pending_external_inputs = defaultdict(list)
-        self.instantiated_external_modules = set()
-        self.external_modules = []
+        self.cross_module_external_reads = []
+        self.external_outputs_by_instance = defaultdict(list)
+        self.external_output_exposures = defaultdict(dict)
         self.module_ctx = None
+        self.external_wrapper_names = {}
+        self.external_instance_names = {}
+        self.external_instance_owners = {}
+        self.external_intrinsics = []
+        self.external_classes = []
 
     def get_pred(self) -> str:
         """Get the current predicate for conditional execution."""
@@ -116,13 +120,22 @@ class CIRCTDumper(Visitor):  # pylint: disable=too-many-instance-attributes,too-
         port_name = f"{producer_name}_{base_port_name}"
         return port_name
 
+    def get_external_wire_key(self, instance, port_name, index_operand):
+        """Create a stable key for cross-module external output wiring."""
+        idx_key = None
+        if index_operand is not None:
+            idx_value = unwrap_operand(index_operand)
+            if isinstance(idx_value, Const):
+                idx_key = ('const', idx_value.value)
+            else:
+                idx_key = ('expr', idx_value)
+        return (instance, port_name, idx_key)
+
+
     # pylint: disable=protected-access
     @staticmethod
     def _is_external_module(module: Module) -> bool:
         """Return True if the module represents an external implementation."""
-
-        if isinstance(module, ExternalSV):
-            return True
 
         attrs = getattr(module, '_attrs', None)
         return attrs is not None and Module.ATTR_EXTERNAL in attrs
@@ -223,9 +236,22 @@ class CIRCTDumper(Visitor):  # pylint: disable=too-many-instance-attributes,too-
         body = codegen_expr(self, expr)
 
         # Handle exposure logic for valued expressions that are externally used
-        if expr.is_valued() and not isinstance(expr, WireRead) \
-                and expr_externally_used(expr, True):
-            if not isinstance(unwrap_operand(expr), Const):
+        if expr.is_valued() and expr_externally_used(expr, True):
+            # Skip exposure for ExternalIntrinsic - they should never be exposed as ports
+            skip_exposure = isinstance(expr, ExternalIntrinsic)
+
+            # For EXTERNAL_OUTPUT_READ, skip exposure only if the instance is in the same module
+            if (
+                isinstance(expr, PureIntrinsic)
+                and expr.opcode == PureIntrinsic.EXTERNAL_OUTPUT_READ
+            ):
+                instance = expr.args[0]  # The ExternalIntrinsic
+                instance_owner = self.external_instance_owners.get(instance)
+                # Skip exposure if the instance is in the current module
+                if instance_owner == self.current_module:
+                    skip_exposure = True
+
+            if not skip_exposure and not isinstance(unwrap_operand(expr), Const):
                 self.expose('expr', expr)
 
         if body is not None:
@@ -250,8 +276,6 @@ class CIRCTDumper(Visitor):  # pylint: disable=too-many-instance-attributes,too-
         self.exposed_ports_to_add = []
         self.finish_body = []
         self.finish_conditions = []
-        self.pending_external_inputs.clear()
-        self.instantiated_external_modules.clear()
 
         # For downstream modules, we still need to process the body
         if node.body is not None:
@@ -406,41 +430,31 @@ class CIRCTDumper(Visitor):  # pylint: disable=too-many-instance-attributes,too-
         self.append_code('')
 
 
-    def _generate_external_module_wrapper(self, ext_module: ExternalSV):
-        """Generate a PyCDE wrapper class for an external module."""
-        class_name = f"{namify(ext_module.name)}_ffi"
-        module_name = getattr(ext_module, 'external_module_name', class_name)
+    def _generate_external_module_wrapper(self, ext_class):
+        """Generate a PyCDE wrapper class for an external ExternalSV descriptor."""
+        class_name = f"{ext_class.__name__}_ffi"
+        metadata = ext_class.metadata()
+        module_name = metadata.get('module_name', ext_class.__name__)
+
+        self.external_wrapper_names[ext_class] = class_name
 
         self.append_code(f'class {class_name}(Module):')
         self.indent += 4
 
         # Set the module name for PyCDE
         self.append_code(f'module_name = f"{module_name}"')
-        if getattr(ext_module, 'has_clock', False):
+        if metadata.get('has_clock'):
             self.append_code('clk = Clock()')
-        if getattr(ext_module, 'has_reset', False):
+        if metadata.get('has_reset'):
             self.append_code('rst = Reset()')
 
-        # Check if the external module carries declared wires
-        if hasattr(ext_module, '_wires') and ext_module._wires:
-            # Handle wires with explicit directions
-            for wire_name, wire in ext_module._wires.items():
-                wire_type = dump_type(wire.dtype)
-                if wire.direction == 'input':
-                    self.append_code(f'{wire_name} = Input({wire_type})')
-                elif wire.direction == 'output':
-                    self.append_code(f'{wire_name} = Output({wire_type})')
-                else:
-                    # For undirected wires, default to Input (backward compatibility)
-                    self.append_code(f'{wire_name} = Input({wire_type})')
-        else:
-            # Fallback to handling ports for backward compatibility
-            for port in ext_module.ports:
-                port_name = namify(port.name)
-                port_type = dump_type(port.dtype)
-                # For external modules, default all ports to Input for backward compatibility
-                # Actual connections will be handled in the instantiation
-                self.append_code(f'{port_name} = Input({port_type})')
+        wires = ext_class.port_specs()
+        for wire_name, wire_spec in wires.items():
+            wire_type = dump_type(wire_spec.dtype)
+            if wire_spec.direction == 'in':
+                self.append_code(f'{wire_name} = Input({wire_type})')
+            else:
+                self.append_code(f'{wire_name} = Output({wire_type})')
 
         self.indent -= 4
         self.append_code('')

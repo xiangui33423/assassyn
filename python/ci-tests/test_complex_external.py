@@ -28,19 +28,19 @@ class ExternalRegister(ExternalSV):
 
 
 class Sink(Module):
-    
+
     def __init__(self):
         super().__init__(
             ports={
                 'a': Port(UInt(32)),
-                'b': Port(UInt(32)),
+                'b': Port(UInt(32))
             },
         )
 
     @module.combinational
-    def build(self , add_out: Array):
+    def build(self, reg: Array):
         a, b = self.pop_all_ports(True)
-        log("Sink received:  {} + {} = {}", a, b, add_out[0])
+        log("Sink received:  {} + {} = {}", a, b, reg[0])
 
 class Adder(Module):
 
@@ -56,18 +56,15 @@ class Adder(Module):
     def build(self , sink: Sink):
         a, b = self.pop_all_ports(True)
 
-        ext_adder = ExternalAdder()
-        ext_adder.in_assign(a=a, b=b)
+        ext_adder = ExternalAdder(a=a, b=b)
 
         log("Adder: {} + {} = {}", a, b, ext_adder.c)
 
-        ext_reg =  ExternalRegister()
-        ext_reg.in_assign(reg_in=ext_adder.c.bitcast(Bits(32)))
-
+        ex_reg = ExternalRegister(reg_in=ext_adder.c.bitcast(Bits(32)))
+        
         sink.async_called(a=a, b=b)
-        log("reg out: {}", ext_reg.reg_out[0])
 
-        return ext_reg
+        return ex_reg.reg_out
 
 
 
@@ -111,16 +108,15 @@ def test_complex_external():
     # context of multi-thread testing.
     sys = SysBuilder('complex_external')
     with sys:
-        #ext_adder = ExternalAdder()
         sink = Sink()
+        
 
         adder = Adder()
-        ext_reg = adder.build(sink)
-
-        sink.build(ext_reg.reg_out)
+        reg = adder.build(sink)
+        sink.build(reg)
 
         driver = Driver()
-        call = driver.build(adder)
+        driver.build(adder)
 
     print(sys)
 
