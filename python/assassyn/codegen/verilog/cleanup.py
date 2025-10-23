@@ -275,7 +275,9 @@ def cleanup_post_generation(dumper):
                 sum_expression = f"({' + '.join(add_terms)})"
 
             resized_sum = f"(({sum_expression}).as_bits()[0:8].as_uint())"
-            final_trigger_value = f"Mux(executed_wire, UInt(8)(0), {resized_sum})"
+
+            final_trigger_value = \
+                f"Mux(executed_wire, UInt(8)(0), {resized_sum})"
             dumper.append_code(f'self.{rval}_trigger = {final_trigger_value}')
 
         else:
@@ -314,7 +316,16 @@ def cleanup_post_generation(dumper):
             # Generate the logic assignment
             dumper.append_code(f'# Expose: {expr}')
             dumper.append_code(f'self.expose_{exposed_name} = {rval}')
-            dumper.append_code(f'self.valid_{exposed_name} = executed_wire')
+            # Include the condition predicate for the valid signal
+            # OR all the predicates together when the same expression is exposed multiple times
+            all_predicates = [pred for _, pred in exposes]
+            if len(all_predicates) == 1:
+                pred_condition = all_predicates[0]
+            elif len(all_predicates) > 1:
+                pred_condition = " | ".join([f"({p})" for p in all_predicates])
+            else:
+                pred_condition = "Bits(1)(1)"
+            dumper.append_code(f'self.valid_{exposed_name} = executed_wire & ({pred_condition})')
 
     external_exposures = dumper.external_output_exposures.get(dumper.current_module, {})
     for data in external_exposures.values():
@@ -333,6 +344,8 @@ def cleanup_post_generation(dumper):
             source_expr = f"{data['instance_name']}.{data['port_name']}"
         dumper.append_code(f'# External output exposure: {source_expr}')
         dumper.append_code(f'self.expose_{output_name} = {source_expr}')
-        dumper.append_code(f'self.valid_{output_name} = executed_wire')
+        # Include the condition predicate for the valid signal if available
+        condition = data.get('condition', 'Bits(1)(1)')
+        dumper.append_code(f'self.valid_{output_name} = executed_wire & ({condition})')
 
     dumper.append_code('self.executed = executed_wire')
