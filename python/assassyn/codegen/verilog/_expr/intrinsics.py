@@ -255,6 +255,7 @@ def codegen_external_intrinsic(dumper, expr: ExternalIntrinsic) -> Optional[str]
             seen_keys.add(wire_key)
             output_name = f"{rval}_{entry['port_name']}"
             dumper.external_wire_outputs[wire_key] = output_name
+            current_pred = dumper.get_pred()
             exposures.setdefault(wire_key, {
                 'output_name': output_name,
                 'dtype': entry['expr'].dtype,
@@ -262,7 +263,9 @@ def codegen_external_intrinsic(dumper, expr: ExternalIntrinsic) -> Optional[str]
                 'port_name': entry['port_name'],
                 'index_operand': entry['index_operand'],
                 'index_key': wire_key[2],
+                'condition': current_pred,
             })
+
 
     return f"{rval} = {call}"
 
