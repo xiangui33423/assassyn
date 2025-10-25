@@ -38,8 +38,22 @@ if [ "${SKIP_PRE_COMMIT_INSTALL:-}" != "1" ]; then
     else
       echo "Pre-commit hook already installed."
     fi
+  elif [ -f "$REPO_PATH/.git" ]; then
+    # This is a git submodule, check if we can access the actual git directory
+    GIT_DIR=$(cat "$REPO_PATH/.git" | sed 's/gitdir: //')
+    if [ -n "$GIT_DIR" ] && [ -d "$GIT_DIR" ] && [ -d "$GIT_DIR/hooks" ]; then
+      if [ ! -f "$GIT_DIR/hooks/pre-commit" ]; then
+        echo "Installing pre-commit hook for git submodule..."
+        ln -s "$REPO_PATH/scripts/pre-commit" "$GIT_DIR/hooks/pre-commit"
+        echo "Pre-commit hook installed successfully."
+      else
+        echo "Pre-commit hook already installed."
+      fi
+    else
+      echo "Git submodule detected, but git directory not accessible. Skipping pre-commit hook installation."
+    fi
   else
-    echo "Git submodule detected, skipping pre-commit hook installation."
+    echo "Not a git repository or git directory not found. Skipping pre-commit hook installation."
   fi
 else
   echo "Skipping pre-commit hook installation."
