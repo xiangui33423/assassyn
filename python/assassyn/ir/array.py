@@ -5,7 +5,7 @@ from __future__ import annotations
 import typing
 
 from ..builder import ir_builder, Singleton
-from .dtype import to_uint, RecordValue
+from .dtype import to_uint, RecordValue, ArrayType
 from .expr import ArrayRead, ArrayWrite, Expr,BinaryOp
 from .value import Value
 from ..utils import identifierize, namify
@@ -95,7 +95,9 @@ def RegArray( #pylint: disable=invalid-name,too-many-arguments
                 # Use a generic 'array' suffix for unnamed arrays
                 hint = f"{context_prefix}_array"
 
-        manager.assign_name(res, hint)
+        # Only assign name if no explicit name was provided
+        if name is None:
+            manager.assign_name(res, hint)
 
     Singleton.builder.arrays.append(res)
 
@@ -139,6 +141,11 @@ class Array:  #pylint: disable=too-many-instance-attributes
         self._name = None
         self._users = []
         self._write_ports = {}
+    @property
+    def dtype(self) -> ArrayType:
+        '''Get the data type of the array as an ArrayType.'''
+        return ArrayType(self.scalar_ty, self.size)
+
     @property
     def users(self):
         '''Get the users of the array.'''
@@ -249,6 +256,7 @@ class Array:  #pylint: disable=too-many-instance-attributes
             index = to_uint(index)
         assert isinstance(index, Value)
         assert isinstance(value, (Value, RecordValue)), type(value)
+
         current_module = Singleton.builder.current_module
         write_port = self & current_module
         return write_port._create_write(index, value)
