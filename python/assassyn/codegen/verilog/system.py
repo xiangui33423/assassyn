@@ -1,15 +1,26 @@
 """System-level code generation utilities."""
 
+from typing import TYPE_CHECKING, Any
+
 from ...ir.memory.sram import SRAM
 from ...ir.expr import AsyncCall, ArrayRead, ArrayWrite
 from ...ir.expr.intrinsic import PureIntrinsic
 from ...analysis import get_upstreams
 from ..simulator.external import collect_external_intrinsics
 from ...utils import unwrap_operand
+from ...builder import SysBuilder
+from ...utils import enforce_type
+from ...ir.module.base import ModuleBase
 
+if TYPE_CHECKING:
+    from .design import CIRCTDumper
+else:
+    # At runtime, alias to Any to avoid cyclic import while preserving static typing
+    CIRCTDumper = Any  # type: ignore
 
 # pylint: disable=too-many-locals,too-many-branches,too-many-statements,protected-access
-def generate_system(dumper, node):
+@enforce_type
+def generate_system(dumper: CIRCTDumper, node: SysBuilder):
     """Generate code for the entire system.
 
     Args:
@@ -19,7 +30,7 @@ def generate_system(dumper, node):
     sys = node
     dumper.sys = sys
     for module in sys.downstreams:
-        if isinstance(module, SRAM) and hasattr(module, '_payload'):
+        if isinstance(module, SRAM):
             dumper.sram_payload_arrays.add(module._payload)
 
     external_intrinsics = collect_external_intrinsics(sys)
@@ -31,7 +42,7 @@ def generate_system(dumper, node):
 
     # Pre-populate external_instance_owners so cross-module references work
     for intrinsic in external_intrinsics:
-        owner_module = intrinsic.parent.module
+        owner_module = intrinsic.parent
         dumper.external_instance_owners[intrinsic] = owner_module
 
         ext_class = intrinsic.external_class
@@ -51,7 +62,11 @@ def generate_system(dumper, node):
             ):
                 instance_operand = expr.args[0]
                 instance = unwrap_operand(instance_operand)
-                owner_module = getattr(getattr(instance, 'parent', None), 'module', None)
+                parent_ref = getattr(instance, 'parent', None)
+                if isinstance(parent_ref, ModuleBase):
+                    owner_module = parent_ref
+                else:
+                    owner_module = getattr(parent_ref, 'module', None)
                 if owner_module is None or owner_module == module:
                     continue
                 port_operand = expr.args[1]
@@ -106,12 +121,6 @@ def generate_system(dumper, node):
     for arr_container in sys.arrays:
         if arr_container not in dumper.sram_payload_arrays:
             dumper.visit_array(arr_container)
-
-    expr_to_module = {}
-    for module in sys.modules + sys.downstreams:
-        for expr in dumper._walk_expressions(module.body):
-            if expr.is_valued():
-                expr_to_module[expr] = module
 
     for ds_module in sys.downstreams:
         dumper.downstream_dependencies[ds_module] = get_upstreams(ds_module)

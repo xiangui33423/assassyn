@@ -13,13 +13,13 @@ from ...utils import namify, identifierize
 if typing.TYPE_CHECKING:
     from ..array import Array
     from ..module import Port, Module
+    from ..module.base import ModuleBase
     from ..dtype import DType
-    from ..block import Block, CondBlock
 
 class Operand:
     '''The base class for all operands. It is used to dump the operand as a string.'''
     _value: Value # The value of this operand
-    _user: typing.Union[Expr, CondBlock] # The user of this operand
+    _user: Expr # The user of this operand
 
     def __init__(self, value: Value, user: Expr):
         self._value = value
@@ -44,7 +44,7 @@ class Expr(Value):
 
     opcode: int  # Operation code for this expression
     loc: str  # Source location information
-    parent: typing.Optional[Block]  # Parent block of this expression
+    parent: typing.Optional[ModuleBase]  # Parent module of this expression
     users: typing.List[Operand]  # List of users of this expression
     _operands: typing.List[
         typing.Union[Operand, Port, Array, int]
@@ -77,7 +77,8 @@ class Expr(Value):
             return operand
 
         if isinstance(operand, Expr):
-            return self._prepare_expr_operand(operand, Singleton.builder.current_module)
+            builder = Singleton.peek_builder()
+            return self._prepare_expr_operand(operand, builder.current_module)
 
         if isinstance(operand, (Const, str, RecordValue, Module, Downstream)):
             return Operand(operand, self)
@@ -96,7 +97,7 @@ class Expr(Value):
             return wrapped
 
         if not isinstance(current_module, Downstream):
-            expr_module = expr_operand.parent.module if expr_operand.parent else None
+            expr_module = expr_operand.parent if expr_operand.parent else None
             if not self._is_cross_module_allowed(expr_operand):
                 assert current_module == expr_module, (
                     f'Expression {expr_operand} is from module {expr_module}, '
@@ -209,9 +210,25 @@ class Log(Expr):
 
     LOG = 600
 
-    def __init__(self, *args):
+    def __init__(self, fmt, *values, meta_cond):
+        args = (fmt, *values, meta_cond)
         super().__init__(Log.LOG, args)
         self.args = args
+
+    @property
+    def fmt(self):
+        '''Return the format string argument.'''
+        return self.args[0]
+
+    @property
+    def values(self):
+        '''Return the payload values excluding the format string and metadata.'''
+        return self.args[1:-1]
+
+    @property
+    def meta_cond(self):
+        '''Return the trailing predicate metadata.'''
+        return self.args[-1]
 
     @property
     def dtype(self):
@@ -221,8 +238,23 @@ class Log(Expr):
         return void()
 
     def __repr__(self):
-        fmt = repr(self.args[0])
-        return f'log({fmt}, {", ".join(i.as_operand() for i in self.args[1:])})'
+        fmt = repr(self.fmt)
+        payload = ", ".join(
+            i.as_operand() if hasattr(i, 'as_operand') else repr(i)
+            for i in self.values
+        )
+        base = f'log({fmt}'
+        if payload:
+            base += f', {payload}'
+        base += ')'
+        meta_cond = self.meta_cond
+        if meta_cond is not None:
+            if hasattr(meta_cond, 'as_operand'):
+                meta_repr = meta_cond.as_operand()
+            else:
+                meta_repr = repr(meta_cond)
+            return f'{base} // meta cond {meta_repr}'
+        return base
 
 class Concat(Expr):
     '''The class for concatenation operation, where {msb, lsb} as a right value'''
@@ -289,7 +321,10 @@ class Cast(Expr):
 def log(*args):
     '''The exposed frontend function to instantiate a log operation'''
     assert isinstance(args[0], str)
-    return Log(*args)
+    #pylint: disable=import-outside-toplevel
+    from .intrinsic import get_pred
+    meta_cond = get_pred()
+    return Log(*args, meta_cond=meta_cond)
 
 
 class Select(Expr):

@@ -16,6 +16,76 @@ Intrinsics are divided into two categories:
 
 ## Execution Control Intrinsics
 
+### `push_condition(condition)` / `pop_condition()`
+
+Purpose: Manage a predicate stack that guards subsequent operations.
+
+Parameters:
+- `condition: Value` (for `push_condition`) – condition to push onto the predicate stack
+
+Returns: `Intrinsic` – Non-valued operations that update the predicate stack
+
+Usage:
+```python
+@module.combinational
+def build(self):
+    cond = self.counter[0] < UInt(32)(100)
+    push_condition(cond)
+    # Statements below are guarded by cond
+    log("in range: {}", self.counter[0])
+    pop_condition()
+```
+
+Nesting:
+```python
+@module.combinational
+def build(self):
+    c1 = self.counter[0] < UInt(32)(10)
+    c2 = (self.counter[0] & UInt(32)(1)) == UInt(32)(0)
+    push_condition(c1)
+    push_condition(c2)
+    # Guarded by c1 & c2
+    log("even under 10: {}", self.counter[0])
+    pop_condition()
+    pop_condition()
+```
+
+Simulator Codegen: `push_condition` emits an `if (cond) {` and increases indentation; `pop_condition` closes the block `}`.
+
+Verilog Codegen: The dumper maintains a predicate stack used by `get_pred()` gating; push/pop only update this stack and do not emit direct code.
+
+Per-Module Semantics: The predicate stack is managed by the builder per module via a ModuleContext record. Each module has its own predicate stack; conditions do not leak across modules. Both explicit predicate intrinsics and `with Condition(cond): ...` push/pop the same builder-managed predicate stack. `Condition` is a thin sugar around `push_condition(cond)` / `pop_condition()`.
+
+### `get_pred()`
+
+Purpose: Return the current predicate computed as the AND of all active conditions on the predicate stack.
+
+Parameters:
+- None
+
+Returns: `Value` – `Bits(1)` predicate; if the stack is empty, returns constant `1`.
+
+Source of Truth: `get_pred()` computes the AND over the current module's predicate stack from the builder's ModuleContext. If invoked outside any module context, it returns `Bits(1)(1)`.
+
+Usage:
+```python
+@module.combinational
+def build(self):
+    # Guard some enable with current predicate
+    enable = get_pred()
+    assume(enable)  # example usage
+```
+
+### `log(fmt, *values)`
+
+Purpose: Emit a formatted trace message guarded by the current predicate.
+
+Relationship to Predicates: The frontend helper captures `get_pred()` when the `Log` node is created and stores the value as the node's `meta_cond` metadata. Downstream codegen (both simulator and Verilog) reads `meta_cond` to decide when to print.
+
+Verilog Codegen: The Verilog dumper exposes only the predicate referenced by `meta_cond` once, generating a `valid_*` / `expose_*` pair that drives the trace guard. Older logic walked the entire condition stack to expose each guard separately; the metadata now serves as the single source of truth to avoid redundant exposures.
+
+Simulator Parity: The Python simulator follows the same contract—`meta_cond` controls when the `print` executes—so the behaviour stays consistent across backends.
+
 ### `wait_until(condition)`
 
 **Purpose**: Block execution until a condition becomes true.
@@ -226,6 +296,30 @@ def build(self):
 
 ---
 
+### `current_cycle()`
+
+**Purpose**: Get the current global cycle count for conditional scheduling and testbench logic.
+
+**Parameters**:
+- None
+
+**Returns**: `PureIntrinsic` - `UInt(64)` current cycle number
+
+**Usage**:
+```python
+@module.combinational
+def build(self):
+    from assassyn.ir.dtype import UInt
+    from assassyn.ir.expr.intrinsic import current_cycle
+    with Condition(current_cycle() == UInt(64)(10)):
+        # Executes at cycle 10
+        do_something()
+```
+
+**Notes**:
+- `Cycle(n)` is now a thin wrapper around `Condition(current_cycle() == UInt(64)(n))`.
+- Testbench scheduling in the simulator triggers the Testbench every cycle; guards can be applied using `current_cycle()`.
+
 ## Memory Request Patterns
 
 ### Basic Memory Access Pattern
@@ -267,4 +361,3 @@ with Condition(we):
 To handle this, use separate intrinsics to check request success:
 - `has_mem_resp(mem)` - Check if memory has a response
 - `get_mem_resp(mem)` - Get the memory response data
-

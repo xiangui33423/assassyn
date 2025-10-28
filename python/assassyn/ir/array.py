@@ -99,7 +99,7 @@ def RegArray( #pylint: disable=invalid-name,too-many-arguments
         if name is None:
             manager.assign_name(res, hint)
 
-    Singleton.builder.arrays.append(res)
+    Singleton.peek_builder().arrays.append(res)
 
     return res
 
@@ -188,14 +188,14 @@ class Array:  #pylint: disable=too-many-instance-attributes
 
         # Add read operations
         for read_op in read_ops:
-            module_name = getattr(read_op.parent, 'module', None)
-            module_str = getattr(module_name, 'name', 'Unknown') if module_name else 'Unknown'
+            module_owner = getattr(read_op, 'parent', None)
+            module_str = getattr(module_owner, 'name', 'Unknown') if module_owner else 'Unknown'
             all_ops.append(f'Read  by: {read_op} in {module_str}')
 
         # Add write operations
         for write_op in write_ops:
-            module_name = getattr(write_op.parent, 'module', None)
-            module_str = getattr(module_name, 'name', 'Unknown') if module_name else 'Unknown'
+            module_owner = getattr(write_op, 'parent', None)
+            module_str = getattr(module_owner, 'name', 'Unknown') if module_owner else 'Unknown'
             all_ops.append(f'Write by: {write_op} in {module_str}')
 
         # Format tree structure
@@ -233,17 +233,8 @@ class Array:  #pylint: disable=too-many-instance-attributes
     def __getitem__(self, index: typing.Union[int, Value]):
         if isinstance(index, int):
             index = to_uint(index, self.index_bits)
-
-        builder = Singleton.builder
-        cache = builder.array_read_cache.setdefault(builder.current_block, {})
-        cache_key = (self, index)
-        cached = cache.get(cache_key)
-        if cached is not None:
-            return cached
-
-        res = ArrayRead(self, index)
-        cache[cache_key] = res
-        return res
+        builder = Singleton.peek_builder()
+        return builder.reuse_array_read(self, index, lambda: ArrayRead(self, index))
 
     def get_flattened_size(self):
         '''Get the flattened size of the array.'''
@@ -257,6 +248,6 @@ class Array:  #pylint: disable=too-many-instance-attributes
         assert isinstance(index, Value)
         assert isinstance(value, (Value, RecordValue)), type(value)
 
-        current_module = Singleton.builder.current_module
+        current_module = Singleton.peek_builder().current_module
         write_port = self & current_module
         return write_port._create_write(index, value)

@@ -36,7 +36,7 @@ The base class for all expression nodes in the IR. It serves as the foundation f
 **Fields:**
 - `opcode: int` - Operation code for this expression
 - `loc: str` - Source location information  
-- `parent: typing.Optional[Block]` - Parent block of this expression
+- `parent: typing.Optional[ModuleBase]` - Owning module of this expression (set by the builder)
 - `users: typing.List[Operand]` - List of users of this expression
 - `_operands: typing.List[typing.Union[Operand, Port, Array, int]]` - List of operands of this expression
 
@@ -67,7 +67,7 @@ Direct storage would only provide forward traversal (Expr → Value). The wrappe
 
 **Fields:**
 - `_value: Value` - The value of this operand
-- `_user: typing.Union[Expr, CondBlock]` - The user of this operand (expressions are common, but guard expressions stored on `CondBlock` instances also reuse Operand)
+- `_user: Expr` - The expression that consumes this operand
 
 **Methods:**
 - `__init__(value: Value, user: Expr)` - Initialize the operand
@@ -153,11 +153,19 @@ A non-synthesizable node that functions as a print statement for debugging durin
 - `LOG = 600`
 
 **Fields:**
-- `args: tuple` - Arguments to the log operation
+- `args: tuple` - Positional arguments backing the operation. The final element stores predicate metadata.
+
+**Properties:**
+- `fmt` - Returns the format string (`args[0]`).
+- `values` - Returns the payload values to be substituted into the format string (`args[1:-1]`).
+- `meta_cond` - Returns the predicate metadata captured at construction time (`args[-1]`).
+- `dtype` - Get the data type of this operation (void for side-effect operations).
 
 **Methods:**
-- `__init__(*args)` - Initialize log operation
-- `dtype` - Get the data type of this operation (property, returns Void)
+- `__init__(fmt, *values, meta_cond)` - Initialize log operation
+
+**Notes:**
+- `Log` is an ordinary expression node, **not** an intrinsic. The frontend helper captures the active predicate using `get_pred()` and stores it in `meta_cond` for downstream tools.
 
 ### Frontend Functions
 
@@ -172,7 +180,9 @@ The exposed frontend function to instantiate a log operation.
 - `Log` - The log expression node
 
 **Explanation:**
-This function creates a `Log` expression node for debugging purposes. The first argument must be a string format, followed by values to be logged. This is non-synthesizable and only works during simulation.
+This function creates a `Log` expression node for debugging purposes. The first argument must be a string format, followed by values to be logged. It is non-synthesizable and only works during simulation.
+
+On creation the helper captures the current predicate (via `get_pred()`) and appends it as trailing metadata. The convenience properties keep format/payload access ergonomic while callers that need metadata consumption can rely on `meta_cond` without duplicating state on the node.
 
 
 ---
@@ -234,8 +244,8 @@ The intentional redundancy in the use-def graph enables critical compiler operat
 - Enables precise timing analysis for pipeline stages
 
 **Dependency Tracking:**
-- Essential for conditional blocks (`CondBlock`) and other control flow
-- The `CondBlock` wraps its condition in an `Operand` to track the dependency
+- Essential for predicate-managed control flow because predicate intrinsics still consume the condition operands
+- Each predicate push intrinsic wraps its condition in an `Operand` to track the dependency
 - Enables proper ordering of operations across different execution contexts
 
 **Multi-Port Write Tracking:**
