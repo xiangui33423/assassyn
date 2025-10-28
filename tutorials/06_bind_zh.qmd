@@ -307,7 +307,87 @@ partial_sub = functools.partial(subtract, a=10)
 result = partial_sub(b=3)
 ```
 
-### 6.2 常见模式
+### 6.2 Bind vs Downstream：时序合流 vs 组合合流
+
+**核心区别：**
+
+| 特性 | **Bind** (时序合流) | **Downstream** (组合合流) |
+|------|-------------------|------------------------|
+| **合流时机** | 跨越多个流水线阶段 | 同一组合逻辑内 |
+| **数据到达** | 不同时间，需 FIFO 缓冲 | 同一时刻，无需缓冲 |
+| **参数绑定** | 渐进式，分阶段绑定 | 一次性，所有参数同时可用 |
+| **典型场景** | 多路径处理后合流 | 多个数据源的组合运算 |
+| **硬件实现** | 需要握手协议和 FIFO | 纯组合逻辑连线 |
+
+**Downstream 示例：组合合流**
+```python
+# 多个数据源在同一阶段合流
+class CombinationalMerge(Module):
+    @module.combinational
+    def build(self):
+        a = source_a.pop()  # 同时刻
+        b = source_b.pop()  # 同时刻
+        c = source_c.pop()  # 同时刻
+        result = compute(a, b, c)  # 组合逻辑
+        self.downstream(result)
+```
+
+**Bind 示例：时序合流**
+```python
+# 多个数据源在不同阶段合流
+class SequentialMerge(Module):
+    @module.combinational
+    def build(self, target: Module):
+        # 阶段 1: 绑定第一个参数
+        bound1 = target.bind(arg_a=value1)
+
+        # 阶段 2: 绑定第二个参数（可能数个周期后）
+        bound2 = bound1.bind(arg_b=value2)
+
+        # 阶段 3: 完成绑定并执行（可能更多周期后）
+        AsyncCall(bound2.bind(arg_c=value3))
+```
+
+**直观理解：**
+```{mermaid}
+%%| fig-width: 10
+flowchart TD
+    subgraph Downstream["Downstream: 组合合流"]
+        D1[源 A] --> D4[组合逻辑]
+        D2[源 B] --> D4
+        D3[源 C] --> D4
+        D4 --> D5[结果]
+        style D4 fill:#e8f5e9
+    end
+
+    subgraph Bind["Bind: 时序合流"]
+        B1[阶段 1: 源 A] --> B4[FIFO A]
+        B2[阶段 2: 源 B] --> B5[FIFO B]
+        B3[阶段 3: 源 C] --> B6[FIFO C]
+        B4 --> B7[握手合并]
+        B5 --> B7
+        B6 --> B7
+        B7 --> B8[结果]
+        style B7 fill:#fff3e0
+    end
+
+    style Downstream fill:#f0f9ff
+    style Bind fill:#fef3f2
+```
+
+**何时使用 Bind？** <br>
+- ✅ 数据来自不同流水线阶段 <br>
+- ✅ 需要跨越多个时钟周期 <br>
+- ✅ 路径长度不同（如分支预测、缓存访问） <br>
+- ✅ 需要解耦不同处理单元的时序 
+
+**何时使用 Downstream？** <br>
+- ✅ 数据在同一阶段内可用 <br>
+- ✅ 纯组合逻辑计算 <br>
+- ✅ 不需要跨周期缓冲 <br>
+- ✅ 所有输入同时到达
+
+### 6.3 常见模式
 
 **模式 1：渐进式绑定** - 跨多个阶段逐步构建参数
 ```python
