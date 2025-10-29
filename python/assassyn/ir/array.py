@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import contextlib
 import typing
 
 from ..builder import ir_builder, Singleton
 from .dtype import to_uint, RecordValue, ArrayType
-from .expr import ArrayRead, ArrayWrite, Expr,BinaryOp
+from .expr import ArrayRead, ArrayWrite, Expr, BinaryOp
 from .value import Value
 from ..utils import identifierize, namify
 from .expr.writeport import WritePort
@@ -14,6 +15,36 @@ from .expr.writeport import WritePort
 if typing.TYPE_CHECKING:
     from .dtype import DType
     from .module.base import ModuleBase
+    from .memory.base import MemoryBase
+    OwnerType = ModuleBase | MemoryBase | None
+else:
+    OwnerType = typing.Any
+
+
+def _validate_owner(owner: typing.Any) -> OwnerType:
+    '''Ensure the provided owner reference is recognised.'''
+    # pylint: disable=import-outside-toplevel
+    from .module.base import ModuleBase
+    from .memory.base import MemoryBase
+
+    if owner is None or isinstance(owner, (ModuleBase, MemoryBase)):
+        return owner
+    raise TypeError(
+        'Array owner must be a ModuleBase, MemoryBase, or None, '
+        f'got {type(owner)}'
+    )
+
+
+def _resolve_owner(owner: typing.Any) -> OwnerType:
+    '''Resolve the owner reference, falling back to the current module context.'''
+    if owner is not None:
+        return _validate_owner(owner)
+
+    builder = Singleton.peek_builder()
+    module = None
+    with contextlib.suppress(RuntimeError):
+        module = builder.current_module
+    return module
 
 
 class Slice(Expr):
@@ -61,12 +92,15 @@ class Slice(Expr):
 
 
 
-def RegArray( #pylint: disable=invalid-name,too-many-arguments
+def RegArray(  # pylint: disable=invalid-name,too-many-arguments
         scalar_ty: DType,
         size: int,
         initializer: list = None,
         name: str = None,
-        attr: list = None,):
+        attr: list = None,
+        *,
+        owner: OwnerType = None,
+    ):
     '''
     The frontend API to declare a register array.
 
@@ -78,9 +112,9 @@ def RegArray( #pylint: disable=invalid-name,too-many-arguments
     '''
 
     attr = attr if attr is not None else []
+    resolved_owner = _resolve_owner(owner)
 
-
-    res = Array(scalar_ty, size, initializer)
+    res = Array(scalar_ty, size, initializer, resolved_owner)
     if name is not None:
         res.name = name
 
@@ -112,7 +146,8 @@ class Array:  #pylint: disable=too-many-instance-attributes
     attr: list  # Attributes of the array
     _users: typing.List[Expr]  # Users of the array
     _name: str  # Internal name storage
-    _write_ports: typing.Dict['ModuleBase', 'WritePort'] = {} # Write ports for this array
+    _write_ports: typing.Dict['ModuleBase', 'WritePort'] = {}  # Write ports for this array
+    _owner: OwnerType  # Provenance descriptor
 
 
     def as_operand(self):
@@ -130,10 +165,11 @@ class Array:  #pylint: disable=too-many-instance-attributes
     def name(self, name):
         self._name = namify(name)
 
-    def __init__(self, scalar_ty: DType, size: int, initializer: list):
+    def __init__(self, scalar_ty: DType, size: int, initializer: list, owner: OwnerType):
         #pylint: disable=import-outside-toplevel
         from .dtype import DType
         assert isinstance(scalar_ty, DType)
+        validated_owner = _validate_owner(owner)
         self.scalar_ty = scalar_ty
         self.size = size
         self.initializer = initializer
@@ -141,6 +177,7 @@ class Array:  #pylint: disable=too-many-instance-attributes
         self._name = None
         self._users = []
         self._write_ports = {}
+        self._owner = validated_owner
     @property
     def dtype(self) -> ArrayType:
         '''Get the data type of the array as an ArrayType.'''
@@ -150,6 +187,43 @@ class Array:  #pylint: disable=too-many-instance-attributes
     def users(self):
         '''Get the users of the array.'''
         return self._users
+
+    @property
+    def owner(self) -> OwnerType:
+        '''Get the ownership context of the array.'''
+        return self._owner
+
+    def assign_owner(self, owner: OwnerType) -> None:
+        '''Override the ownership context with a new value.'''
+        self._owner = _validate_owner(owner)
+
+    def is_payload(self, memory: type['MemoryBase'] | 'MemoryBase') -> bool:
+        '''Return whether this array is the payload buffer for the supplied memory.'''
+        # pylint: disable=import-outside-toplevel,cyclic-import
+        from .memory.base import MemoryBase
+
+        owner = self.owner
+
+        if isinstance(memory, type):
+            if not issubclass(memory, MemoryBase):
+                raise TypeError(
+                    'Array.is_payload expects a MemoryBase subclass or instance; '
+                    f'got class {memory}'
+                )
+            if owner is None or not isinstance(owner, memory):
+                return False
+            memory_instance = owner
+        else:
+            if not isinstance(memory, MemoryBase):
+                raise TypeError(
+                    'Array.is_payload expects a MemoryBase subclass or instance; '
+                    f'got {type(memory)}'
+                )
+            if owner is not memory:
+                return False
+            memory_instance = memory
+
+        return self is getattr(memory_instance, '_payload', None)
 
     def __and__(self, other):
         '''

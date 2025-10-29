@@ -16,7 +16,7 @@ def codegen_array_read(dumper, expr: ArrayRead) -> Optional[str]:
     is_sram_payload = False
 
     if isinstance(dumper.current_module, SRAM):
-        if array_ref == dumper.current_module._payload:  # pylint: disable=protected-access
+        if array_ref.is_payload(dumper.current_module):
             is_sram_payload = True
 
     rval = dumper.dump_rval(expr, False)
@@ -26,7 +26,7 @@ def codegen_array_read(dumper, expr: ArrayRead) -> Optional[str]:
         dumper.expose('array', expr)
     else:
         array_name = dumper.dump_rval(array_ref, False)
-        port_idx = dumper.array_read_expr_port.get(expr)
+        port_idx = dumper.array_metadata.read_port_index_for_expr(expr)
         if port_idx is None:
             return None
         body = f'{rval} = self.{array_name}_rdata_port{port_idx}'

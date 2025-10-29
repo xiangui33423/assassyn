@@ -42,6 +42,7 @@ This module provides the main Verilog design generation functionality, including
 4. **Signal Routing**: External module signals are routed through the design
 5. **Co-simulation Support**: External modules are integrated for co-simulation
 6. **Cross-Module Output Tracking**: `CIRCTDumper` now tracks every cross-module read of an external register output via `cross_module_external_reads`, `external_outputs_by_instance`, and the normalised wire keys returned by `get_external_wire_key`, allowing downstream passes to declare data/valid ports exactly once per producer.
+7. **Centralised Detection Logic**: External-module identification is now handled by the system-analysis bookkeeping shared with the simulator’s [external stub utilities](../simulator/external.md); the dumper does not expose dedicated helper predicates anymore.
 
 **Credit-Based Pipeline Implementation Details:** The Verilog design generation implements the credit-based pipeline:
 
@@ -104,7 +105,7 @@ The CIRCTDumper class is the main visitor that converts Assassyn IR into Verilog
 
 1. **Execution Control**: `wait_until`, `cond_stack`, and `finish_conditions` track predicate stacking, wait-until clauses, and FINISH intrinsics.
 2. **Module State**: `current_module`, `_exposes`, `module_ctx`, and `exposed_ports_to_add` capture which values need to become ports.
-3. **Array Management**: `array_write_port_mapping`, `array_users`, `sram_payload_arrays`, and `memory_defs` orchestrate multi-port array writers and SRAM payloads.
+3. **Array Management**: `array_metadata`, `memory_defs`, and ownership metadata ensure multi-port register arrays are emitted while memory payloads (`array.is_payload(memory)` returning `True`) are routed through dedicated generators.
 4. **External Integration**: `external_intrinsics`, `external_classes`, `external_wrapper_names`, `external_instance_names`, `external_instance_owners`, `cross_module_external_reads`, `external_outputs_by_instance`, and `external_output_exposures` track how `ExternalIntrinsic` nodes map to wrapper modules, which modules read each exposed register output, and the producer-side ports required to materialise those reads.
 5. **Expression Naming**: `expr_to_name` and `name_counters` guarantee deterministic signal names whenever expression results must be reused across statements.
 6. **Code Generation**: `code`, `logs`, and `indent` store emitted lines and diagnostic information used later by the testbench.
@@ -116,12 +117,12 @@ The CIRCTDumper class is the main visitor that converts Assassyn IR into Verilog
 
 **`visit_module`**: Generates a complete Verilog module with the following phases:
 1. **Analysis Phase**: Processes the module body, collecting exposes, async call metadata, and external wiring information. During this phase, metadata for pushes and calls is collected incrementally as expressions are processed.
-2. **Port Generation**: Calls `generate_module_ports()` to create module interfaces, using the captured expose data and the metadata lists (pushes/calls) instead of re-walking the module body.
+2. **Port Generation**: Calls `generate_module_ports()` to create module interfaces. The helper now derives downstream/SRAM/driver roles and reads push/call/pop metadata directly from `CIRCTDumper.module_metadata`, so `visit_module` no longer threads redundant flags or lists between phases.
 3. **Code Integration**: Combines the collected body statements with the module boilerplate and generator decorators.
 4. **Special Handling**: Resets external bookkeeping between modules, emits SRAM-specific prelude code, and avoids instantiating pure external stubs.
 
 **`visit_array`**: Generates multi-port array modules with:
-- Write port interfaces for each writing module (based on `array_write_port_mapping`)
+- Write port interfaces for each writing module (queried via `array_metadata.write_port_index()`)
 - Multi-port arbitration loops that prioritise the last matching port
 - Register-based storage with programmable reset values
 - Outputs that feed downstream module array readers
@@ -147,13 +148,11 @@ The CIRCTDumper class is the main visitor that converts Assassyn IR into Verilog
 
 #### Internal Helpers
 
-**`_walk_expressions`**: Recursively traverses blocks to find all expressions for analysis
-
 **`_generate_external_module_wrapper`**: Creates PyCDE wrapper classes for external SystemVerilog modules. If the external metadata defines explicit wires (and their direction), the wrapper mirrors them; otherwise it falls back to treating the declared ports as inputs for backwards compatibility. Clock/reset ports are emitted when requested by the metadata.
 
 **`_connect_array`**: Handles multi-port array connections between modules by wiring each module’s per-port write enable/data/index signals into the shared array writer instance the dumper previously generated.
 
-**`_is_external_module`**: Determines if a module represents an external implementation
+Direct traversal of module bodies is performed inline where needed: since `DONE-remove-block` flattened every module’s `body` list, consumers iterate those statements directly and filter for `Expr` subclasses to perform per-expression analysis.
 
 The CIRCTDumper class integrates with multiple other modules:
 - [Expression generation](/python/assassyn/codegen/verilog/_expr/__init__.md) for handling different expression types

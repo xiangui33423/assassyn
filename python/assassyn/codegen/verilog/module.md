@@ -11,25 +11,18 @@ The module port generation utilities handle the creation of comprehensive module
 ### `generate_module_ports`
 
 ```python
-def generate_module_ports(dumper, node: Module, is_downstream: bool, is_sram: bool,
-                          is_driver: bool, pushes: List, calls: List, pops: List) -> None:
-    """Generate port declarations for a module.
-
-    Args:
-        dumper: The CIRCTDumper instance
-        node: The module to generate ports for
-        is_downstream: Whether this is a downstream module
-        is_sram: Whether this is an SRAM module
-        is_driver: Whether this module is a driver
-        pushes: List of FIFOPush expressions
-        calls: List of AsyncCall expressions
-        pops: List of FIFOPop expressions
-    """
+def generate_module_ports(dumper, node: Module) -> None:
+    """Generate port declarations for a module using dumper metadata."""
 ```
 
 **Explanation**
 
-This function generates comprehensive port declarations for Verilog modules based on their role in the credit-based pipeline architecture. It performs the following steps:
+This function generates comprehensive port declarations for Verilog modules based on their role in the credit-based pipeline architecture. Rather than requiring callers to pre-compute module roles or FIFO metadata, it derives all inputs from the dumper:
+
+- `is_downstream`, `is_sram`, and `is_driver` are inferred via `isinstance` checks and the dumper’s `async_callees` registry.
+- FIFO and async-call behaviour is loaded from `dumper.module_metadata[node]`, defaulting to empty lists when metadata is missing (e.g. for stubs filtered earlier).
+
+It then performs the following steps:
 
 1. **Standard Ports**: Emits the common Assassyn ports (`clk`, `rst`, `executed`, `cycle_count`, `finish`).
 
@@ -44,12 +37,12 @@ This function generates comprehensive port declarations for Verilog modules base
    - Direct externals (`node.externals`) still emit `<producer>_<value>` and `<producer>_<value>_valid` inputs for expressions that originate elsewhere (skipping bindings, constants, and the `ExternalIntrinsic` handles themselves). The implementation now resolves the producer by first checking whether `expr.parent` is already a module—reflecting the block-free IR—before falling back to legacy `.module` lookups.
 
 5. **FIFO Handshake Ports**:
-   - For pipeline modules, declares FIFO inputs (`port`, `port_valid`) and optional `port_pop_ready` outputs when the module pops from the FIFO, determined by `pops` metadata (`{p.fifo for p in pops}`).
-   - Adds ready inputs for FIFO pushes and trigger counter deltas, skipping handshake ports when the producer/consumer is a pure external stub.
+   - For pipeline modules, declares FIFO inputs (`port`, `port_valid`) and optional `port_pop_ready` outputs when the module pops from the FIFO, determined by the `pops` metadata (`{p.fifo for p in pops}`).
+   - Adds ready inputs for FIFO pushes and trigger counter deltas using push/call metadata collected during system analysis.
 
-6. **Output Handshakes**: Declares `<callee>_<fifo>_push_valid/data` outputs and `<callee>_trigger` outputs for each async call target, again skipping external-only callees so we do not generate unused ports.
+6. **Output Handshakes**: Declares `<callee>_<fifo>_push_valid/data` outputs and `<callee>_trigger` outputs for each async call target, relying on system analysis to omit dormant integrations.
 
-7. **Array Interfaces**: For every array listed in `dumper.array_users[node]`, creates inputs for the array value (`_q_in`) and, when the current module writes to the array, outputs for the per-port write enable/data/index signals. Port indices come from `dumper.array_write_port_mapping`.
+7. **Array Interfaces**: For every array recorded in `dumper.array_metadata.users_for(arr)`, creates inputs for the array value (`_q_in`) and, when the current module writes to the array, outputs for the per-port write enable/data/index signals. Port indices come from `dumper.array_metadata.write_port_index(arr, node)`.
 
 8. **Exposed Ports**: Appends any additional port declarations recorded in `dumper.exposed_ports_to_add` during expression traversal (e.g. `expose_*` and `valid_*` ports).
 
@@ -58,7 +51,7 @@ The function accounts for several module categories:
 - **Downstream Modules**: Receive upstream execution flags and, if applicable, SRAM memory interfaces.
 - **Pipeline Modules**: Get trigger-counter pop-valid signals, FIFO inputs, and handshake ports.
 - **SRAM Modules**: Extend downstream behaviour with memory-specific ports.
-- **External Stubs**: Skipped from handshake port generation so we do not expose meaningless signals for modules implemented outside of Python.
+- **External Stubs**: Filtered out during system analysis when they truly exist, so port generation only needs to describe modules that participate in hardware emission.
 
 **Project-specific Knowledge Required**:
 - Understanding of [credit-based pipeline architecture](/docs/design/arch/arch.md)
@@ -75,13 +68,10 @@ The function uses several utility functions and data structures:
 - `get_sram_info()` from [utils module](/python/assassyn/codegen/verilog/utils.md) for SRAM information
 - `namify()` and `unwrap_operand()` from [utils module](/python/assassyn/utils.md) for name generation
 - `get_external_port_name()` from [CIRCTDumper](/python/assassyn/codegen/verilog/design.md) for external port naming
-- `_walk_expressions()` from [CIRCTDumper](/python/assassyn/codegen/verilog/design.md) for expression traversal
-- `_is_external_module()` from [CIRCTDumper](/python/assassyn/codegen/verilog/design.md) for external module detection
 
 The function integrates with the CIRCTDumper's state management:
 - `downstream_dependencies`: Maps downstream modules to their dependencies
-- `array_users`: Maps arrays to modules that use them
-- `array_write_port_mapping`: Maps arrays to write port assignments
+- `array_metadata`: Registry supplying array usage and port assignments
 - `exposed_ports_to_add`: Additional ports registered through expose mechanism
 
 **Project-specific Knowledge Required**:

@@ -106,6 +106,10 @@ module fifo #(
 endmodule
 ```
 
+### PyCDE Runtime Helpers
+
+The generated `design.py` imports reusable PyCDE helpers from `assassyn.pycde_wrapper`. This module defines the parameterized `FIFO` and `TriggerCounter` classes using `@modparams`, mirroring the handwritten templates above. Centralizing the definitions prevents divergent copies of these primitives between generated designs and user-authored PyCDE code.
+
 ## Combinational Downstream Modules
 
 Downstream modules are implemented as pure combinational logic. The key considerations are:
@@ -175,6 +179,8 @@ module reg_array #(
     assign read_data = memory[read_addr];
 endmodule
 ```
+
+When an array belongs to a memory instance and `array.is_payload(memory)` returns `True`, the backend bypasses this generic module entirely and instead emits the specialised SRAM/DRAM wrappers that expose memory-specific handshakes. Ownership metadata is now identity-based, enabling the backend to distinguish payload buffers from standard registers without dedicated descriptor classes.
 
 ## Clock Domain and Timing
 

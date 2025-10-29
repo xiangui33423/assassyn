@@ -14,7 +14,7 @@ from .utils import (
 )
 
 from ...analysis import expr_externally_used
-from ...ir.module import Module, Downstream
+from ...ir.module import Module
 from ...ir.memory.sram import SRAM
 from ...builder import SysBuilder
 from ...ir.visitor import Visitor
@@ -38,6 +38,7 @@ from .rval import dump_rval as dump_rval_impl
 from .module import generate_module_ports
 from .system import generate_system
 from .metadata import PostDesignGeneration
+from .array import ArrayMetadataRegistry
 
 
 class CIRCTDumper(Visitor):  # pylint: disable=too-many-instance-attributes,too-many-statements
@@ -55,9 +56,8 @@ class CIRCTDumper(Visitor):  # pylint: disable=too-many-instance-attributes,too-
     async_callees: Dict[Module, List[Module]]
     downstream_dependencies: Dict[Module, List[Module]]
     is_top_generation: bool
-    finish_body:list[str]
-    sram_payload_arrays:set
-    memory_defs:set
+    finish_body: list[str]
+    memory_defs: set
 
     def __init__(self):
         super().__init__()
@@ -74,14 +74,9 @@ class CIRCTDumper(Visitor):  # pylint: disable=too-many-instance-attributes,too-
         self.exposed_ports_to_add = []
         self.downstream_dependencies = {}
         self.is_top_generation = False
-        self.array_users = {}
         self.finish_body = []
         self.finish_conditions = []
-        self.array_write_port_mapping = {}
-        self.array_read_port_mapping = {}
-        self.array_read_ports = {}
-        self.array_read_expr_port = {}
-        self.sram_payload_arrays = set()
+        self.array_metadata = ArrayMetadataRegistry()
         self.memory_defs = set()
         self.expr_to_name = {}
         self.name_counters = defaultdict(int)
@@ -130,24 +125,6 @@ class CIRCTDumper(Visitor):  # pylint: disable=too-many-instance-attributes,too-
             else:
                 idx_key = ('expr', idx_value)
         return (instance, port_name, idx_key)
-
-
-    # pylint: disable=protected-access
-    @staticmethod
-    def _is_external_module(module: Module) -> bool:
-        """Return True if the module represents an external implementation."""
-
-        attrs = getattr(module, '_attrs', None)
-        return attrs is not None and Module.ATTR_EXTERNAL in attrs
-
-    @staticmethod
-    def is_stub_external(module: Module) -> bool:
-        """Return True if the module has no generated body and acts as a pure external stub."""
-        if not CIRCTDumper._is_external_module(module):
-            return False
-        body = getattr(module, "body", None)
-        body_insts = body if isinstance(body, list) else []
-        return not body_insts
 
 
     def dump_rval(self, node, with_namespace: bool, module_name: str = None) -> str:
@@ -263,26 +240,16 @@ class CIRCTDumper(Visitor):  # pylint: disable=too-many-instance-attributes,too-
 
         self.current_module = node
 
-        is_downstream = isinstance(node, Downstream)
-        is_sram = isinstance(node, SRAM)
-        is_driver = node not in self.async_callees
-
         self.append_code(f'class {namify(node.name)}(Module):')
         self.indent += 4
 
-        # Use metadata instead of walking expressions
-        metadata = self.module_metadata.get(node)
-        pushes = metadata.pushes if metadata else []
-        calls = metadata.calls if metadata else []
-        pops = metadata.pops if metadata else []
-
-        generate_module_ports(self, node, is_downstream, is_sram, is_driver, pushes, calls, pops)
+        generate_module_ports(self, node)
 
         self.append_code('')
         self.append_code('@generator')
         self.append_code('def construct(self):')
 
-        if is_sram:
+        if isinstance(node, SRAM):
             self.indent += 4
             self.append_code('# SRAM dataout from memory')
             self.append_code('dataout = self.mem_dataout')
@@ -293,15 +260,6 @@ class CIRCTDumper(Visitor):  # pylint: disable=too-many-instance-attributes,too-
         self.indent -= 4
         self.append_code('')
         self.module_ctx = previous_module_ctx
-
-    def _walk_expressions(self, block):
-        """Iterate through module bodies and yield all expressions."""
-        if block is None:
-            return
-        for item in block:
-            if isinstance(item, Expr):
-                yield item
-
 
     # pylint: disable=too-many-locals,R0912
     def visit_system(self, node: SysBuilder):
@@ -317,10 +275,13 @@ class CIRCTDumper(Visitor):  # pylint: disable=too-many-instance-attributes,too-
         index_bits = array.index_bits
         index_bits_type = index_bits if index_bits > 0 else 1
 
-        writers = list(array.get_write_ports().keys())
-        num_write_ports = len(writers)
-        read_ports = self.array_read_ports.get(array, [])
-        num_read_ports = len(read_ports)
+        metadata = self.array_metadata.metadata_for(array)
+        if metadata is None:
+            num_write_ports = len(array.get_write_ports())
+            num_read_ports = 0
+        else:
+            num_write_ports = len(metadata.write_ports)
+            num_read_ports = len(metadata.read_order)
 
         dim_type = f"dim({dump_type(dtype)}, {size})"
         class_name = namify(array.name)
@@ -435,9 +396,12 @@ class CIRCTDumper(Visitor):  # pylint: disable=too-many-instance-attributes,too-
     def _connect_array(self, arr):
         """Connect each array to its writers and readers."""
         arr_name = namify(arr.name)
-        write_mapping = self.array_write_port_mapping.get(arr, {})
-        read_mapping = self.array_read_port_mapping.get(arr, {})
-        if not write_mapping and not read_mapping:
+        metadata = self.array_metadata.metadata_for(arr)
+        if metadata is None:
+            return
+        write_mapping = metadata.write_ports
+        read_mapping = metadata.read_ports_by_module
+        if not write_mapping and not any(read_mapping.values()):
             return
 
         self.append_code(f'# Connections for array {arr_name}')

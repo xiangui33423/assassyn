@@ -3,6 +3,7 @@
 """Top-level harness generation for Verilog designs."""
 
 from collections import defaultdict
+from typing import TYPE_CHECKING, Any
 
 from .utils import (
     dump_type,
@@ -11,6 +12,7 @@ from .utils import (
 )
 
 from ...analysis import topo_downstream_modules
+from ...ir.memory.base import MemoryBase
 from ...ir.module import Downstream
 from ...ir.module.base import ModuleBase
 from ...ir.memory.sram import SRAM
@@ -22,8 +24,13 @@ from ...ir.dtype import Record
 from ...utils import namify, unwrap_operand
 from ...ir.const import Const
 
+if TYPE_CHECKING:
+    from .design import CIRCTDumper
+else:
+    CIRCTDumper = Any  # type: ignore
+
 # pylint: disable=too-many-locals,too-many-branches,too-many-statements
-def generate_top_harness(dumper):
+def generate_top_harness(dumper: CIRCTDumper):
     """
     Generates a generic Top-level harness that connects all modules based on
     the analyzed dependencies (async calls, array usage).
@@ -78,8 +85,6 @@ def generate_top_harness(dumper):
     # --- 1. Wire Declarations (Generic) ---
     dumper.append_code('# --- Wires for FIFOs, Triggers, and Arrays ---')
     for module in dumper.sys.modules:
-        if dumper.is_stub_external(module):
-            continue
         for port in module.ports:
             fifo_base_name = f'fifo_{namify(module.name)}_{namify(port.name)}'
             dumper.append_code(f'# Wires for FIFO connected to {module.name}.{port.name}')
@@ -92,8 +97,6 @@ def generate_top_harness(dumper):
 
     # Wires for TriggerCounters (one per module)
     for module in dumper.sys.modules:
-        if dumper.is_stub_external(module):
-            continue
         tc_base_name = f'{namify(module.name)}_trigger_counter'
         dumper.append_code(f'# Wires for {module.name}\'s TriggerCounter')
         dumper.append_code(f'{tc_base_name}_delta = Wire(Bits(8))')
@@ -103,19 +106,18 @@ def generate_top_harness(dumper):
 
     for arr_container in dumper.sys.arrays:
         arr = arr_container
-        is_sram_array = any(
-            isinstance(m, SRAM) and m._payload == arr  # pylint: disable=protected-access
-            for m in dumper.sys.downstreams
-        )
-        if is_sram_array:
+        if arr.is_payload(SRAM):
             continue
         arr_name = namify(arr.name)
         index_bits = arr.index_bits
         index_bits_type = index_bits if index_bits > 0 else 1
-        port_mapping = dumper.array_write_port_mapping.get(arr, {})
-        num_write_ports = len(port_mapping)
-        read_ports = dumper.array_read_ports.get(arr, [])
-        num_read_ports = len(read_ports)
+        metadata = dumper.array_metadata.metadata_for(arr)
+        if metadata is None:
+            num_write_ports = len(arr.get_write_ports())
+            num_read_ports = 0
+        else:
+            num_write_ports = len(metadata.write_ports)
+            num_read_ports = len(metadata.read_order)
         dumper.append_code(
             f'# Multi-port array {arr_name} with '
             f'{num_write_ports} write ports and {num_read_ports} read ports'
@@ -132,21 +134,15 @@ def generate_top_harness(dumper):
                 f'aw_{arr_name}_widx{port_suffix} = Wire(Bits({index_bits_type}))'
             )
         # Declare wires for read ports
-        if index_bits > 0:
-            for port_idx in range(num_read_ports):
-                port_suffix = f"_port{port_idx}"
+        for port_idx in range(num_read_ports):
+            port_suffix = f"_port{port_idx}"
+            if index_bits > 0:
                 dumper.append_code(
                     f'aw_{arr_name}_ridx{port_suffix} = Wire(Bits({index_bits}))'
                 )
-                dumper.append_code(
-                    f'aw_{arr_name}_rdata{port_suffix} = Wire({dump_type(arr.scalar_ty)})'
-                )
-        else:
-            for port_idx in range(num_read_ports):
-                port_suffix = f"_port{port_idx}"
-                dumper.append_code(
-                    f'aw_{arr_name}_rdata{port_suffix} = Wire({dump_type(arr.scalar_ty)})'
-                )
+            dumper.append_code(
+                f'aw_{arr_name}_rdata{port_suffix} = Wire({dump_type(arr.scalar_ty)})'
+            )
 
         # Instantiate multi-port array
         port_connections = ['clk=self.clk', 'rst=self.rst']
@@ -157,9 +153,9 @@ def generate_top_harness(dumper):
                 f'wdata{port_suffix}=aw_{arr_name}_wdata{port_suffix}',
                 f'widx{port_suffix}=aw_{arr_name}_widx{port_suffix}'
             ])
-        if index_bits > 0:
-            for port_idx in range(num_read_ports):
-                port_suffix = f"_port{port_idx}"
+        for port_idx in range(num_read_ports):
+            port_suffix = f"_port{port_idx}"
+            if index_bits > 0:
                 port_connections.append(
                     f'ridx{port_suffix}=aw_{arr_name}_ridx{port_suffix}'
                 )
@@ -177,8 +173,7 @@ def generate_top_harness(dumper):
     dumper.append_code('\n# --- Hardware Instantiations ---')
 
     module_fifo_depths = {}
-    all_modules = [m for m in (dumper.sys.modules + dumper.sys.downstreams)
-                   if not dumper.is_stub_external(m)]
+    all_modules = dumper.sys.modules + dumper.sys.downstreams
     default_fifo_depth = 2
     for mod in all_modules:
         module_fifo_depths[mod] = \
@@ -201,8 +196,6 @@ def generate_top_harness(dumper):
             module_fifo_depths[owner][fifo_port] = max(current, depth)
 
     for module in dumper.sys.modules:
-        if dumper.is_stub_external(module):
-            continue
         depth_map = module_fifo_depths.get(module, {})
         for port in module.ports:
             fifo_base_name = f'fifo_{namify(module.name)}_{namify(port.name)}'
@@ -225,8 +218,6 @@ def generate_top_harness(dumper):
 
     # Instantiate TriggerCounters
     for module in dumper.sys.modules:
-        if dumper.is_stub_external(module):
-            continue
         tc_base_name = f'{namify(module.name)}_trigger_counter'
         dumper.append_code(
             f'{tc_base_name}_inst = TriggerCounter(WIDTH=8)'
@@ -370,19 +361,27 @@ def generate_top_harness(dumper):
                 array_name = namify(array.name)
                 port_map.append(f'mem_dataout=mem_{array_name}_dataout')
 
-        for arr, users in dumper.array_users.items():
-            if module in users:
-                # Skip SRAM arrays as they don't have array_writer instances
-                is_sram_array = any(isinstance(m, SRAM) and
-                                   m._payload == arr for m in dumper.sys.downstreams)
-                if not is_sram_array:
-                    read_indices = dumper.array_read_port_mapping.get(arr, {}).get(module, [])
-                    arr_name = namify(arr.name)
-                    for port_idx in read_indices:
-                        port_suffix = f"_port{port_idx}"
-                        port_map.append(
-                            f"{arr_name}_rdata{port_suffix}=aw_{arr_name}_rdata{port_suffix}"
-                        )
+        for arr in dumper.array_metadata.arrays():
+            users = dumper.array_metadata.users_for(arr)
+            if not any(user is module for user in users):
+                continue
+            # Skip SRAM arrays as they don't have array_writer instances
+            if arr.is_payload(SRAM):
+                continue
+            read_indices = dumper.array_metadata.read_port_indices(arr, module)
+            if not read_indices:
+                metadata = dumper.array_metadata.metadata_for(arr)
+                if metadata is not None:
+                    for module_key, ports in metadata.read_ports_by_module.items():
+                        if module_key is module:
+                            read_indices = ports
+                            break
+            arr_name = namify(arr.name)
+            for port_idx in read_indices:
+                port_suffix = f"_port{port_idx}"
+                port_map.append(
+                    f"{arr_name}_rdata{port_suffix}=aw_{arr_name}_rdata{port_suffix}"
+                )
 
         # Use metadata instead of walking expressions again
         metadata = dumper.module_metadata.get(module)
@@ -396,24 +395,12 @@ def generate_top_harness(dumper):
         unique_push_targets = {(p.fifo.module, p.fifo) for p in pushes}
         unique_call_targets = {c.bind.callee for c in calls}
 
-        # Filter out external modules from push targets
-        filtered_push_targets = set()
         for (callee_mod, callee_port) in unique_push_targets:
-            if not dumper.is_stub_external(callee_mod):
-                filtered_push_targets.add((callee_mod, callee_port))
-
-        # Filter out external modules from call targets
-        filtered_call_targets = set()
-        for callee_mod in unique_call_targets:
-            if not dumper.is_stub_external(callee_mod):
-                filtered_call_targets.add(callee_mod)
-
-        for (callee_mod, callee_port) in filtered_push_targets:
             port_map.append(
                 f"fifo_{namify(callee_mod.name)}_{namify(callee_port.name)}_push_ready="
                 f"fifo_{namify(callee_mod.name)}_{namify(callee_port.name)}_push_ready"
             )
-        for callee_mod in filtered_call_targets:
+        for callee_mod in unique_call_targets:
             port_map.append(
                 f"{namify(callee_mod.name)}_trigger_counter_delta_ready="
                 f"{namify(callee_mod.name)}_trigger_counter_delta_ready"
@@ -500,8 +487,6 @@ def generate_top_harness(dumper):
 
     # dumper.append_code('\n# --- Tie off unused FIFO push ports ---')
     for module in dumper.sys.modules:
-        if dumper.is_stub_external(module):
-            continue
         for port in getattr(module, 'ports', []):
             if port not in all_driven_fifo_ports:
                 fifo_base_name = f'fifo_{namify(module.name)}_{namify(port.name)}'
@@ -512,14 +497,15 @@ def generate_top_harness(dumper):
                     )
     dumper.append_code('\n# --- Array Write-Back Connections ---')
     for arr_container in dumper.sys.arrays:
-        if arr_container in dumper.array_users and \
-                arr_container not in dumper.sram_payload_arrays:
+        owner = arr_container.owner
+        if isinstance(owner, MemoryBase) and arr_container.is_payload(owner):
+            continue
+        metadata = dumper.array_metadata.metadata_for(arr_container)
+        if metadata and metadata.users:
             dumper._connect_array(arr_container)
 
     dumper.append_code('\n# --- Trigger Counter Delta Connections ---')
     for module in dumper.sys.modules:
-        if dumper.is_stub_external(module):
-            continue
         mod_name = namify(module.name)
         if module in dumper.async_callees:
             callers_of_this_module = dumper.async_callees[module]

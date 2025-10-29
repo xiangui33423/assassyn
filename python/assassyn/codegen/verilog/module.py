@@ -1,8 +1,8 @@
 """Module port generation utilities for Verilog code generation."""
 
-from typing import List
 from .utils import dump_type, get_sram_info
-from ...ir.module import Module
+from ...ir.module import Module, Downstream
+from ...ir.memory.sram import SRAM
 from ...ir.module.base import ModuleBase
 from ...ir.expr import Bind
 from ...ir.expr.intrinsic import ExternalIntrinsic
@@ -11,20 +11,22 @@ from ...utils import namify, unwrap_operand
 
 
 # pylint: disable=too-many-arguments,too-many-locals,too-many-branches,too-many-statements
-# pylint: disable=protected-access
-def generate_module_ports(dumper, node: Module, is_downstream: bool, is_sram: bool,
-                          is_driver: bool, pushes: List, calls: List, pops: List) -> None:
+def generate_module_ports(dumper, node: Module) -> None:
     """Generate port declarations for a module.
 
     Args:
         dumper: The CIRCTDumper instance
         node: The module to generate ports for
-        is_downstream: Whether this is a downstream module
-        is_sram: Whether this is an SRAM module
-        is_driver: Whether this module is a driver
-        pushes: List of FIFOPush expressions
-        calls: List of AsyncCall expressions
     """
+    is_downstream = isinstance(node, Downstream)
+    is_sram = isinstance(node, SRAM)
+    is_driver = node not in dumper.async_callees
+
+    metadata = dumper.module_metadata.get(node)
+    pushes = metadata.pushes
+    calls = metadata.calls
+    pops = metadata.pops
+
     dumper.append_code('clk = Clock()')
     dumper.append_code('rst = Reset()')
     dumper.append_code('executed = Output(Bits(1))')
@@ -85,7 +87,7 @@ def generate_module_ports(dumper, node: Module, is_downstream: bool, is_sram: bo
         dumper.append_code(f'{port_name}_valid = Input(Bits(1))')
         added_external_ports.add(port_name)
 
-    if not is_downstream and not dumper._is_external_module(node):
+    if not is_downstream:
         for i in node.ports:
             name = namify(i.name)
             dumper.append_code(f'{name} = Input({dump_type(i.dtype)})')
@@ -99,36 +101,20 @@ def generate_module_ports(dumper, node: Module, is_downstream: bool, is_sram: bo
     unique_call_handshake_targets = {c.bind.callee for c in calls}
     unique_output_push_ports = {p.fifo for p in pushes}
 
-    # Skip external modules for handshake targets
-    filtered_push_targets = set()
     for module, fifo_name in unique_push_handshake_targets:
-        if not dumper._is_external_module(module):
-            filtered_push_targets.add((module, fifo_name))
-
-    filtered_call_targets = set()
-    for callee in unique_call_handshake_targets:
-        if not dumper._is_external_module(callee):
-            filtered_call_targets.add(callee)
-
-    for module, fifo_name in filtered_push_targets:
         port_name = f'fifo_{namify(module.name)}_{namify(fifo_name)}_push_ready'
         dumper.append_code(f'{port_name} = Input(Bits(1))')
-    for callee in filtered_call_targets:
+    for callee in unique_call_handshake_targets:
         port_name = f'{namify(callee.name)}_trigger_counter_delta_ready'
         dumper.append_code(f'{port_name} = Input(Bits(1))')
 
-    # Skip external modules for output push ports
-    filtered_output_push_ports = set()
+    # Output push ports for async callees and FIFO producers
     for fifo_port in unique_output_push_ports:
-        if not dumper._is_external_module(fifo_port.module):
-            filtered_output_push_ports.add(fifo_port)
-
-    for fifo_port in filtered_output_push_ports:
         port_prefix = f"{namify(fifo_port.module.name)}_{namify(fifo_port.name)}"
         dumper.append_code(f'{port_prefix}_push_valid = Output(Bits(1))')
         dtype = fifo_port.dtype
         dumper.append_code(f'{port_prefix}_push_data = Output({dump_type(dtype)})')
-    for callee in filtered_call_targets:
+    for callee in unique_call_handshake_targets:
         dumper.append_code(f'{namify(callee.name)}_trigger = Output(UInt(8))')
 
     # pylint: disable=too-many-nested-blocks
@@ -138,23 +124,28 @@ def generate_module_ports(dumper, node: Module, is_downstream: bool, is_sram: bo
             sram_info = get_sram_info(node)
             if sram_info and arr == sram_info['array']:
                 continue
-        read_mapping = dumper.array_read_port_mapping.get(arr, {})
-        read_port_indices = read_mapping.get(node)
-        if read_port_indices is None:
-            for module_key, ports in read_mapping.items():
+        metadata = dumper.array_metadata.metadata_for(arr)
+        if metadata is None:
+            continue
+
+        users = dumper.array_metadata.users_for(arr)
+        if not any(user is node for user in users):
+            continue
+
+        read_port_indices = dumper.array_metadata.read_port_indices(arr, node)
+        if not read_port_indices:
+            for module_key, ports in metadata.read_ports_by_module.items():
                 if module_key is node:
                     read_port_indices = ports
                     break
-        if read_port_indices is None:
-            read_port_indices = []
 
-        port_mapping = dumper.array_write_port_mapping.get(arr, {})
-        writes_idx = port_mapping.get(node)
+        writes_idx = dumper.array_metadata.write_port_index(arr, node)
         if writes_idx is None:
-            for module_key, idx in port_mapping.items():
+            for module_key, idx in metadata.write_ports.items():
                 if module_key is node:
                     writes_idx = idx
                     break
+
         if read_port_indices or writes_idx is not None:
             index_bits = arr.index_bits
             idx_type = index_bits if index_bits > 0 else 1

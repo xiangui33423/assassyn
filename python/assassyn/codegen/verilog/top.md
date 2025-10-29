@@ -110,18 +110,15 @@ The function uses several utility functions and data structures:
 - `namify()` and `unwrap_operand()` from [utils module](/python/assassyn/utils.md) for name generation
 - `topo_downstream_modules()` from [analysis module](/python/assassyn/analysis/external_usage.md) for topological ordering
 - `get_external_port_name()` from [CIRCTDumper](/python/assassyn/codegen/verilog/design.md) for external port naming
-- Metadata-driven checks for `FIFOPop` readiness: `_walk_expressions()` is no longer used to detect whether a module pops a FIFO. Instead, the `pops` list in `module_metadata` is consulted to decide if `<port>_pop_ready` connections should be emitted.
-- `_is_external_module()` from [CIRCTDumper](/python/assassyn/codegen/verilog/design.md) for external module detection
+- Metadata-driven checks for `FIFOPop` readiness: the `pops` list in `module_metadata` determines whether `<port>_pop_ready` connections should be emitted, replacing the legacy dumper helper traversal.
 - `_connect_array()` from [CIRCTDumper](/python/assassyn/codegen/verilog/design.md) for array connections
 
 The function manages several CIRCTDumper state variables:
 
 - `memory_defs`: SRAM memory definitions
-- `array_write_port_mapping`: Array write port assignments
+- `array_metadata`: Registry containing array write/read port assignments and usage
 - `downstream_dependencies`: Downstream module dependencies
 - `async_callees`: Async call relationships
-- `array_users`: Array usage mapping
-- `sram_payload_arrays`: SRAM payload arrays
 
 **Project-specific Knowledge Required**:
 - Understanding of [CIRCTDumper state management](/python/assassyn/codegen/verilog/design.md)
