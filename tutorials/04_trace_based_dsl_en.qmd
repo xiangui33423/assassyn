@@ -10,6 +10,7 @@ format:
 # Tutorial: Understanding Assassyn's Trace-based DSL
 
 > **Author:** Yao Wentao
+> 
 > **Date:** 2025.10.15
 >
 
