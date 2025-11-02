@@ -49,13 +49,14 @@ from pycde import Input, Output, Module, System, Clock, Reset, dim
 from pycde import generator, modparams
 from pycde.constructs import Reg, Array, Mux, Wire
 from pycde.types import Bits, SInt, UInt
-from assassyn.pycde_wrapper import FIFO, TriggerCounter
+from assassyn.pycde_wrapper import FIFO, TriggerCounter, build_register_file
 ```
 
 `assassyn.pycde_wrapper` centralizes PyCDE helpers that back the credit-based pipeline. It exposes:
 
 - `FIFO`: Parameterized depth-tracking FIFO that maps to `fifo.sv`
 - `TriggerCounter`: Credit counter primitive that maps to `trigger_counter.sv`
+- `build_register_file`: Factory that produces multi-port register files matching the Verilog backend’s expectations (write-enable/index/data triplets plus optional read indices)
 
 Keeping these definitions in a runtime module ensures generated designs and user-authored helpers reuse the same implementations.
 
@@ -76,7 +77,7 @@ Keeping these definitions in a runtime module ensures generated designs and user
 
 ### CIRCTDumper Walkthrough
 
-- `visit_system` builds: `array_metadata`, `async_callees` (callee→callers), `downstream_dependencies` (downstream→upstreams), external wrappers, and SRAM metadata. Then visits modules and emits `Top`.
+- `visit_system` builds: `array_metadata`, external wrappers, SRAM metadata, and the cross-module exposure tables required for external wiring. Async-call and downstream dependencies are consumed from the frozen metadata and analysis helpers during module and top-level emission.
 - `visit_module` walks the body (via `_expr`), declares ports (`generate_module_ports`, which infers roles and metadata internally), then emits handshakes and gating (`cleanup_post_generation`) inside `construct`.
 - `visit_block` tracks nested predicates for conditional and cycled blocks so `Log`/`FINISH`/FIFO ops inherit the correct guards.
 
@@ -93,7 +94,7 @@ Keeping these definitions in a runtime module ensures generated designs and user
 
 ## Handshake & Scheduling
 
-- `executed_wire` gates side‑effects each cycle:
+- `executed_wire` gates side‑effects each cycle (built through `_format_reduction_expr` so OR / AND reductions share the same formatting):
   - Drivers: `trigger_counter_pop_valid [& WAIT_UNTIL]`
   - Downstreams: OR of upstream `inst_<dep>.executed`
 - FIFO push (producer of `<C>.<p>`):

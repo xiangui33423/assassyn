@@ -11,7 +11,7 @@ from .utils import (
     get_sram_info,
 )
 
-from ...analysis import topo_downstream_modules
+from ...analysis import topo_downstream_modules, get_upstreams
 from ...ir.memory.base import MemoryBase
 from ...ir.module import Downstream
 from ...ir.module.base import ModuleBase
@@ -182,9 +182,9 @@ def generate_top_harness(dumper: CIRCTDumper):
     # Use metadata-driven pushes to compute FIFO depths, avoiding expression walking
     for module in dumper.sys.modules + dumper.sys.downstreams:
         metadata = dumper.module_metadata.get(module)
-        if not metadata:
+        if metadata is None:
             continue
-        for push in metadata.pushes:
+        for push in metadata.interactions.pushes:
             fifo_port = push.fifo
             owner = fifo_port.module
             if owner not in module_fifo_depths:
@@ -347,10 +347,10 @@ def generate_top_harness(dumper: CIRCTDumper):
             _attach_external_values(module, port_map, handled_ports)
 
         else:
-            if module in dumper.downstream_dependencies:
-                for dep_mod in dumper.downstream_dependencies[module]:
-                    dep_name = namify(dep_mod.name)
-                    port_map.append(f"{dep_name}_executed=inst_{dep_name}.executed")
+            upstream_modules = sorted(get_upstreams(module), key=lambda mod: mod.name)
+            for dep_mod in upstream_modules:
+                dep_name = namify(dep_mod.name)
+                port_map.append(f"{dep_name}_executed=inst_{dep_name}.executed")
 
             handled_ports = _attach_consumer_external_entries(module, port_map)
             _attach_external_values(module, port_map, handled_ports)
@@ -385,14 +385,14 @@ def generate_top_harness(dumper: CIRCTDumper):
 
         # Use metadata instead of walking expressions again
         metadata = dumper.module_metadata.get(module)
-        pushes = metadata.pushes if metadata else []
+        pushes = metadata.interactions.pushes if metadata else ()
         calls = metadata.calls if metadata else []
 
-        for p in pushes:
+        for push in pushes:
             # Store the actual Port object that is the target of a push
-            all_driven_fifo_ports.add(p.fifo)
+            all_driven_fifo_ports.add(push.fifo)
 
-        unique_push_targets = {(p.fifo.module, p.fifo) for p in pushes}
+        unique_push_targets = {(push.fifo.module, push.fifo) for push in pushes}
         unique_call_targets = {c.bind.callee for c in calls}
 
         for (callee_mod, callee_port) in unique_push_targets:
@@ -426,7 +426,7 @@ def generate_top_harness(dumper: CIRCTDumper):
                 f"{mod_name}_trigger_counter_pop_ready.assign(inst_{mod_name}.executed)"
             )
             metadata = dumper.module_metadata.get(module)
-            popped_fifos = {p.fifo for p in (metadata.pops if metadata else [])}
+            popped_fifos = {pop.fifo for pop in (metadata.interactions.pops if metadata else ())}
             for port in module_ports:
                 if port in popped_fifos:
                     connection_lines.append(
@@ -477,7 +477,7 @@ def generate_top_harness(dumper: CIRCTDumper):
         mod_name = namify(module.name)
         # Check if this module type has finish conditions using metadata
         metadata = dumper.module_metadata.get(module)
-        if metadata and metadata.has_finish:
+        if metadata and metadata.finish_sites:
             finish_signals.append(f'inst_{mod_name}.finish')
 
     if finish_signals:
@@ -507,11 +507,11 @@ def generate_top_harness(dumper: CIRCTDumper):
     dumper.append_code('\n# --- Trigger Counter Delta Connections ---')
     for module in dumper.sys.modules:
         mod_name = namify(module.name)
-        if module in dumper.async_callees:
-            callers_of_this_module = dumper.async_callees[module]
+        async_callers = dumper.async_callers(module)
+        if async_callers:
             trigger_terms = [
                 f"inst_{namify(c.name)}.{mod_name}_trigger"
-                for c in callers_of_this_module
+                for c in async_callers
             ]
             summed_triggers = f"reduce(add, [{', '.join(trigger_terms)}])"
 

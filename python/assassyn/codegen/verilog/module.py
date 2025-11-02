@@ -1,10 +1,12 @@
 """Module port generation utilities for Verilog code generation."""
 
+from .cleanup import resolve_value_exposure_render
 from .utils import dump_type, get_sram_info
+from ...analysis.topo import get_upstreams
 from ...ir.module import Module, Downstream
 from ...ir.memory.sram import SRAM
 from ...ir.module.base import ModuleBase
-from ...ir.expr import Bind
+from ...ir.expr import Bind, Expr
 from ...ir.expr.intrinsic import ExternalIntrinsic
 from ...ir.const import Const
 from ...utils import namify, unwrap_operand
@@ -20,12 +22,14 @@ def generate_module_ports(dumper, node: Module) -> None:
     """
     is_downstream = isinstance(node, Downstream)
     is_sram = isinstance(node, SRAM)
-    is_driver = node not in dumper.async_callees
+    async_callers = list(dumper.async_callers(node))
+    is_driver = not async_callers
 
-    metadata = dumper.module_metadata.get(node)
-    pushes = metadata.pushes
-    calls = metadata.calls
-    pops = metadata.pops
+    module_metadata = dumper.module_metadata[node]
+    module_view = module_metadata.interactions
+    pushes = list(module_view.pushes)
+    pops = list(module_view.pops)
+    calls = list(module_metadata.calls)
 
     dumper.append_code('clk = Clock()')
     dumper.append_code('rst = Reset()')
@@ -34,9 +38,9 @@ def generate_module_ports(dumper, node: Module) -> None:
     dumper.append_code('finish = Output(Bits(1))')
 
     if is_downstream:
-        if node in dumper.downstream_dependencies:
-            for dep_mod in dumper.downstream_dependencies[node]:
-                dumper.append_code(f'{namify(dep_mod.name)}_executed = Input(Bits(1))')
+        upstream_modules = sorted(get_upstreams(node), key=lambda mod: mod.name)
+        for dep_mod in upstream_modules:
+            dumper.append_code(f'{namify(dep_mod.name)}_executed = Input(Bits(1))')
         if is_sram:
             sram_info = get_sram_info(node)
             if sram_info:
@@ -48,20 +52,17 @@ def generate_module_ports(dumper, node: Module) -> None:
                 dumper.append_code('mem_write_enable = Output(Bits(1))')
                 dumper.append_code('mem_read_enable = Output(Bits(1))')
 
-    elif is_driver or node in dumper.async_callees:
+    elif is_driver or async_callers:
         dumper.append_code('trigger_counter_pop_valid = Input(Bits(1))')
 
     added_external_ports = set()
 
-    consumer_entries = [
-        entry for entry in getattr(dumper, 'cross_module_external_reads', [])
-        if entry['consumer'] is node
-    ]
+    consumer_entries = dumper.external_metadata.reads_for_consumer(node)
     for entry in consumer_entries:
-        port_name = dumper.get_external_port_name(entry['expr'])
+        port_name = dumper.get_external_port_name(entry.expr)
         if port_name in added_external_ports:
             continue
-        dtype = dump_type(entry['expr'].dtype)
+        dtype = dump_type(entry.expr.dtype)
         dumper.append_code(f'{port_name} = Input({dtype})')
         dumper.append_code(f'{port_name}_valid = Input(Bits(1))')
         added_external_ports.add(port_name)
@@ -173,5 +174,23 @@ def generate_module_ports(dumper, node: Module) -> None:
                     f' Output(Bits({idx_type}))'
                 )
 
-    for port_code in dumper.exposed_ports_to_add:
-        dumper.append_code(port_code)
+    ordered_exposures: list[Expr] = []
+    seen_ids: set[int] = set()
+    for expr in module_metadata.value_exposures:
+        expr_id = id(expr)
+        if expr_id in seen_ids:
+            continue
+        seen_ids.add(expr_id)
+        ordered_exposures.append(expr)
+
+    for expr in ordered_exposures:
+        render = resolve_value_exposure_render(dumper, expr)
+        dumper.append_code(f'expose_{render.exposed_name} = Output({render.dtype_str})')
+        dumper.append_code(f'valid_{render.exposed_name} = Output(Bits(1))')
+
+    external_exposures = dumper.external_output_exposures.get(node, {})
+    for data in external_exposures.values():
+        output_name = data['output_name']
+        dtype_str = dump_type(data['dtype'])
+        dumper.append_code(f'expose_{output_name} = Output({dtype_str})')
+        dumper.append_code(f'valid_{output_name} = Output(Bits(1))')

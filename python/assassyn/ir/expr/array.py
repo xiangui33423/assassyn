@@ -22,13 +22,21 @@ class ArrayWrite(Expr):
     ARRAY_WRITE = 401
 
     @enforce_type
-    def __init__(self, arr: Array, idx: Value, val: Value, module: ModuleBase = None):
-        super().__init__(ArrayWrite.ARRAY_WRITE, [arr, idx, val])
+    # pylint: disable=too-many-arguments
+    def __init__(
+        self,
+        arr: Array,
+        idx: Value,
+        val: Value,
+        module: ModuleBase = None,
+        meta_cond: typing.Optional[Value] = None,
+    ):
         # Get module from Singleton if not provided
         if module is None:
             # pylint: disable=import-outside-toplevel
             from ...builder import Singleton
             module = Singleton.peek_builder().current_module
+        super().__init__(ArrayWrite.ARRAY_WRITE, [arr, idx, val], meta_cond=meta_cond)
         self.module = module
 
     @property
@@ -55,9 +63,15 @@ class ArrayWrite(Expr):
 
     def __repr__(self):
         module_info = f' /* {self.module.name} */' if self.module else ''
+        meta = self.meta_cond
+        if meta is None:
+            meta_info = ''
+        else:
+            operand = meta.as_operand() if hasattr(meta, 'as_operand') else repr(meta)
+            meta_info = f' // meta cond {operand}'
         return (
             f'{self.array.as_operand()}[{self.idx.as_operand()}]'
-            f' <= {self.val.as_operand()}{module_info}'
+            f' <= {self.val.as_operand()}{module_info}{meta_info}'
         )
 
 

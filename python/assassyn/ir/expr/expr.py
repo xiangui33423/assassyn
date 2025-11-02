@@ -1,6 +1,6 @@
 '''The AST node data structure for the expressions'''
 
-#pylint: disable=cyclic-import,import-outside-toplevel
+#pylint: disable=cyclic-import,import-outside-toplevel,too-many-instance-attributes
 
 from __future__ import annotations
 
@@ -50,7 +50,7 @@ class Expr(Value):
         typing.Union[Operand, Port, Array, int]
     ] # List of operands of this expression
 
-    def __init__(self, opcode, operands: list):
+    def __init__(self, opcode, operands: list, *, meta_cond: typing.Optional[Value] = None):
         '''Initialize the expression with an opcode'''
         #pylint: disable=import-outside-toplevel,too-many-locals
         self.opcode = opcode
@@ -61,6 +61,24 @@ class Expr(Value):
         for operand in operands:
             self._operands.append(self._prepare_operand(operand))
         self.users = []
+        override = self._normalize_meta_cond(meta_cond)
+        if override is not None:
+            self._meta_cond = override
+        else:
+            self._meta_cond = self._resolve_ambient_meta_cond()
+
+    @staticmethod
+    def _normalize_meta_cond(value: typing.Optional[Value]):
+        return value.value if isinstance(value, Operand) else value
+
+    def _resolve_ambient_meta_cond(self):
+        try:
+            # pylint: disable=import-outside-toplevel
+            from ...builder import Singleton
+            builder = Singleton.peek_builder()
+        except (RuntimeError, ImportError):
+            return None
+        return self._normalize_meta_cond(builder.current_predicate_carry())
 
     def _prepare_operand(self, operand):
         '''Normalize an incoming operand and register its usage'''
@@ -134,6 +152,12 @@ class Expr(Value):
         '''Get the operands of this expression'''
         return self._operands
 
+    @property
+    def meta_cond(self):
+        '''Return the cumulative predicate guarding this expression.'''
+        return self._meta_cond
+
+
     def as_operand(self):
         '''Dump the expression as an operand'''
         # Use the name if assigned by the naming system
@@ -182,8 +206,12 @@ class FIFOPop(Expr):
 
     FIFO_POP = 301
 
-    def __init__(self, fifo):
-        super().__init__(FIFOPop.FIFO_POP, [fifo])
+    def __init__(self, fifo, meta_cond: typing.Optional[Value] = None):
+        if meta_cond is None:
+            # pylint: disable=import-outside-toplevel
+            from .intrinsic import get_pred
+            meta_cond = get_pred()
+        super().__init__(FIFOPop.FIFO_POP, [fifo], meta_cond=meta_cond)
 
     @property
     def fifo(self):
@@ -196,7 +224,13 @@ class FIFOPop(Expr):
         return self.fifo.dtype
 
     def __repr__(self):
-        return f'{self.as_operand()} = {self.fifo.as_operand()}.pop()'
+        meta = self.meta_cond
+        if meta is None:
+            suffix = ''
+        else:
+            operand = meta.as_operand() if hasattr(meta, 'as_operand') else repr(meta)
+            suffix = f' // meta cond {operand}'
+        return f'{self.as_operand()} = {self.fifo.as_operand()}.pop(){suffix}'
 
     def __getattr__(self, name):
         return self.dtype.attributize(self, name)
@@ -210,9 +244,13 @@ class Log(Expr):
 
     LOG = 600
 
-    def __init__(self, fmt, *values, meta_cond):
-        args = (fmt, *values, meta_cond)
-        super().__init__(Log.LOG, args)
+    def __init__(self, fmt, *values, meta_cond=None):
+        args = (fmt, *values)
+        if meta_cond is None:
+            # pylint: disable=import-outside-toplevel
+            from .intrinsic import get_pred
+            meta_cond = get_pred()
+        super().__init__(Log.LOG, args, meta_cond=meta_cond)
         self.args = args
 
     @property
@@ -222,13 +260,8 @@ class Log(Expr):
 
     @property
     def values(self):
-        '''Return the payload values excluding the format string and metadata.'''
-        return self.args[1:-1]
-
-    @property
-    def meta_cond(self):
-        '''Return the trailing predicate metadata.'''
-        return self.args[-1]
+        '''Return the payload values excluding the format string.'''
+        return self.args[1:]
 
     @property
     def dtype(self):
@@ -247,14 +280,11 @@ class Log(Expr):
         if payload:
             base += f', {payload}'
         base += ')'
-        meta_cond = self.meta_cond
-        if meta_cond is not None:
-            if hasattr(meta_cond, 'as_operand'):
-                meta_repr = meta_cond.as_operand()
-            else:
-                meta_repr = repr(meta_cond)
-            return f'{base} // meta cond {meta_repr}'
-        return base
+        meta = self.meta_cond
+        if meta is None:
+            return base
+        operand = meta.as_operand() if hasattr(meta, 'as_operand') else repr(meta)
+        return f'{base} // meta cond {operand}'
 
 class Concat(Expr):
     '''The class for concatenation operation, where {msb, lsb} as a right value'''
@@ -321,10 +351,7 @@ class Cast(Expr):
 def log(*args):
     '''The exposed frontend function to instantiate a log operation'''
     assert isinstance(args[0], str)
-    #pylint: disable=import-outside-toplevel
-    from .intrinsic import get_pred
-    meta_cond = get_pred()
-    return Log(*args, meta_cond=meta_cond)
+    return Log(*args)
 
 
 class Select(Expr):

@@ -38,17 +38,19 @@ class Intrinsic(Expr):
 
     opcode: int  # Operation code for this intrinsic
 
-    def __init__(self, opcode, *args):
-        super().__init__(opcode, args)
+    def __init__(self, opcode, *args, meta_cond=None):
+        payload = list(args)
         _, num_args, _, _ = INTRIN_INFO[opcode]
         # num_args can be None for variable-length args (like EXTERNAL_INSTANTIATE)
         if num_args is not None:
-            assert len(args) == num_args
+            assert len(payload) == num_args
+        super().__init__(opcode, payload, meta_cond=meta_cond)
+        self._payload_len = len(payload)
 
     @property
     def args(self):
         '''Get the arguments of this intrinsic.'''
-        return self._operands
+        return self._operands[:self._payload_len]
     @property
     def dtype(self):
         '''Get the data type of this intrinsic.'''
@@ -172,20 +174,21 @@ class PureIntrinsic(Expr):
         VALUE_VALID: 'valid',
     }
 
-    def __init__(self, opcode, *args):
+    def __init__(self, opcode, *args, meta_cond=None):
         operands = list(args)
-        super().__init__(opcode, operands)
         # Validate arguments for operations with defined arg counts
         if opcode in PURE_INTRIN_INFO:
             _, num_args = PURE_INTRIN_INFO[opcode]
             if num_args is not None:
                 assert len(args) == num_args, \
                     f"Expected {num_args} args for opcode {opcode}, got {len(args)}"
+        super().__init__(opcode, operands, meta_cond=meta_cond)
+        self._payload_len = len(operands)
 
     @property
     def args(self):
         '''Get the arguments of this intrinsic'''
-        return self._operands
+        return self._operands[:self._payload_len]
 
     @property
     def dtype(self):
@@ -263,10 +266,7 @@ def get_pred():
     '''Get the current predicate as AND of builder condition stack.'''
     #pylint: disable=import-outside-toplevel
     from ...builder import Singleton
-    from . import comm
-    from ..dtype import Bits
-    conds = Singleton.peek_builder().get_predicate_stack()
-    return Bits(1)(1) if not conds else comm.and_(*[frame.cond for frame in conds])
+    return Singleton.peek_builder().current_predicate_carry()
 
 
 class ExternalIntrinsic(Intrinsic):
