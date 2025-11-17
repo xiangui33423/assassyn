@@ -1,4 +1,6 @@
-'''Base memory module with common functionality for SRAM and DRAM.'''
+"""Base memory module with common functionality for SRAM and DRAM."""
+
+from __future__ import annotations
 
 import math
 from ..module.downstream import Downstream
@@ -55,7 +57,13 @@ class MemoryBase(Downstream):
         self.addr_width = int(math.log2(depth))
         
         # Create the payload array with instance-prefixed name
-        self._payload = RegArray(Bits(width), depth, attr=[self], name=f'{self.name}_val')
+        self._payload = RegArray(
+            Bits(width),
+            depth,
+            attr=[self],
+            name=f'{self.name}_val',
+            owner=self,
+        )
         
         # Initialize signal attributes to None
         self.we = None

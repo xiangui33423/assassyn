@@ -1,4 +1,6 @@
-'''SRAM memory module implementation.'''
+"""SRAM memory module implementation."""
+
+from __future__ import annotations
 
 from .base import MemoryBase
 from ..module.downstream import combinational
@@ -24,7 +26,12 @@ class SRAM(MemoryBase):  # pylint: disable=too-many-instance-attributes
         """
         super().__init__(width, depth, init_file)
         # Create dout register buffer with instance-prefixed name
-        self.dout = RegArray(Bits(width), 1, name=f'{self.name}_rdata')
+        self.dout = RegArray(
+            Bits(width),
+            1,
+            name=f'{self.name}_rdata',
+            owner=self,
+        )
 
     @combinational
     def build(self, we, re, addr, wdata):  # pylint: disable=too-many-arguments
