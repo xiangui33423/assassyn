@@ -32,7 +32,7 @@ class MemUser(Module):
         offset_reg: RegArray,
         addr_reg: RegArray,
         mem_pingpong_reg: RegArray,
-    ):
+    ):  
         width = self.rdata.dtype.bits
         rdata = self.pop_all_ports(True)
         rdata = rdata.bitcast(UInt(width))
