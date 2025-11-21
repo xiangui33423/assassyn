@@ -64,6 +64,7 @@ class CIRCTDumper(Visitor):  # pylint: disable=too-many-instance-attributes,too-
         self.is_top_generation = False
         self.array_metadata = ArrayMetadataRegistry()
         self.memory_defs = set()
+        self.default_fifo_depth: int = 1
         self.expr_to_name = {}
         self.name_counters = defaultdict(int)
         # Track external module wiring during emission
@@ -341,18 +342,23 @@ class CIRCTDumper(Visitor):  # pylint: disable=too-many-instance-attributes,too-
 
 
 @enforce_type
-def generate_design(fname: Union[str, Path], sys: SysBuilder) -> None:
+def generate_design(
+    fname: Union[str, Path],
+    sys: SysBuilder,
+    *,
+    default_fifo_depth: int = 1,
+) -> None:
     """Generate a complete Verilog design file for the system."""
     with open(str(fname), 'w', encoding='utf-8') as fd:
         fd.write(HEADER)
 
         module_metadata, interactions = collect_fifo_metadata(sys)
-        external_metadata = collect_external_metadata(sys)
         dumper = CIRCTDumper(
             module_metadata=module_metadata,
             interactions=interactions,
-            external_metadata=external_metadata,
+            external_metadata=collect_external_metadata(sys),
         )
+        dumper.default_fifo_depth = default_fifo_depth
 
         # Generate sramBlackbox module definitions for each SRAM
         sram_modules = [m for m in sys.downstreams if isinstance(m, SRAM)]

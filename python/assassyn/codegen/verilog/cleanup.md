@@ -46,7 +46,7 @@ This is the main cleanup function that generates all the necessary control signa
    - Produces the module-local `*_pop_ready` backpressure signal without consulting dumper internals.
    - Reuses `_emit_predicate_mux_chain` so the push-valid reduction and push-data mux mirror the prioritisation used for array writes.
 
-6. **Module Trigger Signal Generation**: Reads async trigger exposures from `dumper.interactions.async_ledger.calls_for_module(current_module)`, sums all predicates (each taken from the call’s `meta_cond` and converted to an 8-bit increment), and routes the result into `<callee>_trigger`.
+6. **Module Trigger Signal Generation**: Reads async trigger exposures from `dumper.interactions.async_ledger.calls_for_module(current_module)`, sums all predicates (each taken from the call’s `meta_cond` and converted to an 8-bit increment), and routes the result into `<callee>_trigger` (currently represented as an 8‑bit unsigned value; the top‑level harness narrows this to the trigger counter width derived from FIFO depth).
 
 7. **External Exposure Generation**: For every value exposure in `module_metadata.value_exposures`:
    - Schedules `expose_<name>`/`valid_<name>` port declarations for the module generator.
