@@ -96,7 +96,7 @@ class MemImpl(Downstream):
         read_addr_reg = RegArray(UInt(addr_width), 1, initializer=[0])
         write_addr_reg = RegArray(UInt(addr_width), 1, initializer=[data_depth])
         stop_reg = RegArray(UInt(1), 1, initializer=[0])
-        reset_cycle_reg = RegArray(UInt(4), 1, initializer=[0])
+        reset_cycle_reg = RegArray(UInt(5), 1, initializer=[0])
         # Stage 3: Write Data to Memory
         with Condition(SM_reg[0] == UInt(2)(3)):
             # Stage 0: Start
@@ -154,33 +154,24 @@ class MemImpl(Downstream):
 
             # Stage 3: Reset
             with Condition(SM_MemImpl[0] == UInt(2)(3)):
-                with Condition(reset_cycle_reg[0] == UInt(4)(0)):
+                # Reset all 16 radix registers to 0
+                with Condition(reset_cycle_reg[0] < UInt(5)(16)):
                     log(
-                        "Stage 3-3: Writing wdata ({:08x}) to mem_addr ({});",
-                        wdata[0],
-                        addr_reg[0],
-                    )  # Place holder to use read_cond for upstreams
+                        "Stage 3-3: Reset radix_reg[{}] to {:08x}.",
+                        reset_cycle_reg[0],
+                        UInt(data_width)(0),
+                    )
+                    radix_reg[reset_cycle_reg[0]] = UInt(data_width)(0)
+                    reset_cycle_reg[0] = reset_cycle_reg[0] + UInt(5)(1)
+
+                # After all radix_reg reset, reset other state
+                with Condition(reset_cycle_reg[0] == UInt(5)(16)):
+                    log(
+                        "Stage 3-3: Reset complete. Resetting state registers."
+                    )
                     re[0] = Bits(1)(0)
                     we[0] = Bits(1)(0)
-                with Condition(reset_cycle_reg[0] <= UInt(4)(14)):
-                    log(
-                        "Stage 3-3: Reset radix_reg[{}] to {:08x}.",
-                        reset_cycle_reg[0],
-                        UInt(data_width)(0),
-                    )
-                    radix_reg[reset_cycle_reg[0]] = UInt(data_width)(0)
-                    reset_cycle_reg[0] = reset_cycle_reg[0] + UInt(4)(1)
-                with Condition(reset_cycle_reg[0] == UInt(4)(15)):
-                    log(
-                        "Stage 3-3: Reset radix_reg[{}] to {:08x}.",
-                        reset_cycle_reg[0],
-                        UInt(data_width)(0),
-                    )
-                    log(
-                        "Stage 3-3: Reset other registers: reset_cycle_reg[0]=0; SM_MemImpl[0]=0; SM_reg[0]=0; read_addr_reg[0]=0; write_addr_reg[0]=data_depth; stop_reg[0]=0;"
-                    )
-                    radix_reg[reset_cycle_reg[0]] = UInt(data_width)(0)
-                    reset_cycle_reg[0] = UInt(4)(0)
+                    reset_cycle_reg[0] = UInt(5)(0)
                     SM_MemImpl[0] = UInt(2)(0)
                     SM_reg[0] = UInt(2)(0)
                     stop_reg[0] = UInt(1)(0)
@@ -221,9 +212,11 @@ class Driver(Module):
             init_file=f"{resource_base}/numbers.data",
         )
         numbers_mem.name = "numbers_mem"
-        numbers_mem.build(
-            we=we[0], re=re[0], wdata=wdata[0], addr=addr_reg[0], user=memory_user
-        )
+        numbers_mem.build(we[0], re[0], addr_reg[0], wdata[0])
+
+        # Connect SRAM output to MemUser input
+        memory_user.async_called(rdata=numbers_mem.dout[0])
+
         mem_start = UInt(addr_width)(0) + (
             mem_pingpong_reg[0] * UInt(addr_width)(data_depth)
         )[0 : (addr_width - 1)].bitcast(UInt(addr_width))
@@ -248,12 +241,11 @@ class Driver(Module):
                 )[0 : (addr_width - 1)].bitcast(UInt(addr_width))
                 re[0] = Bits(1)(1)
                 we[0] = Bits(1)(0)
-                mem_pingpong_reg[0] = ~mem_pingpong_reg[0]
+                mem_pingpong_reg[0] = (~mem_pingpong_reg[0]).bitcast(UInt(1))
             # Stage 1: Read Data into radix
             with Condition(SM_reg[0] == UInt(2)(1)):
                 with Condition(addr_reg[0] < mem_end):
-                    # log("memory async called: addr_reg[0]={:08x}; mem_start={:08x}; mem_end={:08x};", addr_reg[0], mem_start, mem_end)
-                    numbers_mem.bound.async_called()
+                    # SRAM is automatically accessed when conditions are met
                     addr_reg[0] = addr_reg[0] + UInt(addr_width)(1)
                 with Condition(addr_reg[0] == (mem_end - UInt(addr_width)(1))):
                     re[0] = Bits(1)(0)
@@ -270,8 +262,8 @@ class Driver(Module):
                     we[0] = Bits(1)(0)
             # Stage 3: Write Data to Memory
             with Condition(SM_reg[0] == UInt(2)(3)):
-                # log("Memory async called: re={:08x}; we={:08x}; addr_reg[0]={:08x};", re[0], we[0],addr_reg[0])
-                numbers_mem.bound.async_called()
+                # SRAM write is handled by MemImpl FSM
+                pass
         with Condition(offset_reg[0] == UInt(data_width)(data_width)):
             log("finish")
             finish()
