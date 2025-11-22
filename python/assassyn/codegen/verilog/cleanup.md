@@ -26,7 +26,7 @@ This is the main cleanup function that generates all the necessary control signa
 
 1. **Execution Signal Generation**: Creates the `executed_wire` signal that determines when a module should execute:
    - For downstream modules: Gathers upstream dependencies with `analysis.get_upstreams(module)` and ORs their `executed` flags via `_format_reduction_expr(..., op="operator.or_", default_literal="Bits(1)(0)")`.
-   - For regular modules: ANDs the trigger-counter pop-valid input with any active `wait_until` predicate recorded during expression lowering using the same helper with `op="operator.and_"` and a `Bits(1)(1)` default.
+   - For regular modules: Uses only the trigger-counter pop-valid input. Note that `wait_until` predicates are NOT included here because they should only block operations that appear AFTER the `wait_until` in the IR sequence, not ALL operations in the module. Operations before `wait_until` must execute unconditionally to allow proper state progression.
 
 2. **Finish Signal Generation**: Reduces every FINISH site captured in
    `module_metadata.finish_sites`, formatting each intrinsic’s `expr.meta_cond` and gating it with

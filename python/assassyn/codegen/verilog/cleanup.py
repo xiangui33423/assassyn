@@ -59,7 +59,7 @@ def generate_sram_control_signals(dumper, sram_info, module_view):
     if writes:
         first_write = writes[0]
         write_addr = dumper.dump_rval(first_write.idx, False)
-        write_pred_literal = dumper.format_predicate(getattr(first_write, "meta_cond", None))
+        write_pred_literal = dumper.get_pred(first_write)
         write_enable = f'executed_wire & ({write_pred_literal})'
         write_data = dumper.dump_rval(first_write.val, False)
     else:
@@ -165,9 +165,10 @@ def cleanup_post_generation(dumper):
         )
         dumper.append_code(f"executed_wire = {executed_expr}")
     else:
+        # Note: wait_until should NOT gate executed_wire because it should only
+        # block operations that come AFTER it in the IR sequence, not ALL operations.
+        # Operations before wait_until should still execute.
         exec_conditions = ["self.trigger_counter_pop_valid"]
-        if dumper.wait_until:
-            exec_conditions.append(f"({dumper.wait_until})")
 
         executed_expr = _format_reduction_expr(
             exec_conditions,
@@ -181,7 +182,7 @@ def cleanup_post_generation(dumper):
 
     finish_terms = []
     for finish_site in module_metadata.finish_sites:
-        predicate = dumper.format_predicate(getattr(finish_site, "meta_cond", None))
+        predicate = dumper.get_pred(finish_site)
         finish_terms.append(f"({predicate} & executed_wire)")
     finish_expr = _format_reduction_expr(
         finish_terms,
@@ -216,7 +217,7 @@ def cleanup_post_generation(dumper):
                 port_suffix = f"_port{port_idx}"
 
                 def render_array_predicate(write: 'ArrayWrite') -> str:
-                    return dumper.format_predicate(getattr(write, "meta_cond", None))
+                    return dumper.get_pred(write)
 
                 def render_array_value(
                     write: 'ArrayWrite',
@@ -299,10 +300,9 @@ def cleanup_post_generation(dumper):
         dumper.append_code(f'# Expose: {expr}')
         dumper.append_code(f'self.expose_{render.exposed_name} = {render.rval}')
         predicate_terms = [
-            f'({formatted})'
+            f'({dumper.get_pred(entry)})'
             for entry in grouped_exposures
-            if (predicate := getattr(entry, "meta_cond", None)) is not None
-            if (formatted := dumper.format_predicate(predicate)) != "Bits(1)(1)"
+            if getattr(entry, "meta_cond", None) is not None
         ]
         pred_condition = (
             _format_reduction_expr(
@@ -319,10 +319,7 @@ def cleanup_post_generation(dumper):
     async_groups = dumper.interactions.async_ledger.calls_for_module(dumper.current_module)
     for callee, trigger_entries in async_groups.items():
         rval = dumper.dump_rval(callee, False)
-        trigger_predicates = [
-            dumper.format_predicate(getattr(call, "meta_cond", None))
-            for call in trigger_entries
-        ]
+        trigger_predicates = [dumper.get_pred(call) for call in trigger_entries]
         if not trigger_predicates:
             dumper.append_code(f'self.{rval}_trigger = UInt(8)(0)')
             continue
@@ -343,7 +340,7 @@ def cleanup_post_generation(dumper):
             fifo_default = f"{dump_type(fifo_port.dtype)}(0)"
 
             def render_fifo_predicate(entry) -> str:
-                return dumper.dump_rval(getattr(entry, "meta_cond", None), False)
+                return dumper.get_pred(entry)
 
             def render_fifo_value(entry) -> str:
                 return dumper.dump_rval(entry.val, False)
@@ -374,7 +371,7 @@ def cleanup_post_generation(dumper):
 
         if local_pops:
             pop_predicates = [
-                f'({dumper.dump_rval(getattr(entry, "meta_cond", None), False)})'
+                f'({dumper.get_pred(entry)})'
                 for entry in local_pops
             ]
             final_pop_condition = _format_reduction_expr(
