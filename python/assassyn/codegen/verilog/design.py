@@ -97,12 +97,15 @@ class CIRCTDumper(Visitor):  # pylint: disable=too-many-instance-attributes,too-
         predicate: Optional[Expr],
         *,
         extra_conditions: Optional[Iterable[str]] = None,
+        raw: bool = False,
     ) -> str:
         """Format a predicate value as a Bits expression."""
         if predicate is None:
             predicate_code = "Bits(1)(1)"
         else:
-            predicate_code = ensure_bits(self.dump_rval(predicate, False))
+            predicate_code = self.dump_rval(predicate, False)
+            if not raw:
+                predicate_code = ensure_bits(predicate_code)
 
         combined_terms: List[str] = []
         if extra_conditions is not None:
