@@ -7,7 +7,6 @@ requiring 8 passes through the data.
 from assassyn.frontend import *
 from assassyn.test import run_test
 from assassyn import utils
-from assassyn.ir.module import fsm
 
 
 # Data configuration for testing
@@ -406,8 +405,8 @@ def test_radix_sort():
         'radix_sort',
         top,
         check,
-        sim_threshold=50000,
-        idle_threshold=10,
+        sim_threshold=5000,
+        idle_threshold=100,
         resource_base=f'{utils.repo_path()}/python/ci-tests/resources'
     )
 
