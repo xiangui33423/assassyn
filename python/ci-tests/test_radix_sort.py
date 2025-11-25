@@ -39,7 +39,7 @@ class MemUser(Module):
         rdata = self.pop_all_ports(True)
         rdata = rdata.bitcast(UInt(width))
         # Extract 4-bit radix index from current bit position
-        idx = (rdata >> offset_reg[0])[0:3]
+        idx = (rdata >> offset_reg[0])[0:3].bitcast(UInt(4))
         # Only read to radix_reg in stage 1 (read state)
         with Condition(SM_reg[0] == Bits(2)(1)):
             log(
@@ -147,7 +147,7 @@ class MemImpl(Downstream):
                     wdata[0],
                     addr_reg[0],
                 )
-                idx = (rdata >> offset_reg[0])[0:3]
+                idx = (rdata >> offset_reg[0])[0:3].bitcast(UInt(4))
                 wdata[0] = rdata.bitcast(Bits(data_width))
                 write_addr_reg[0] = (
                     radix_reg[idx][0 : (addr_width - 1)].bitcast(UInt(addr_width))
