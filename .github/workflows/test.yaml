@@ -47,6 +47,10 @@ jobs:
         run: |
           . setup.sh && python examples/array-increment/main.py
 
+      - name: Run Radix Sort Test
+        run: |
+          . setup.sh && pytest python/ci-tests/test_radix_sort.py -v
+
       - name: Clean CMake Cache
         run: |
           find . -name "CMakeCache.txt" -delete
