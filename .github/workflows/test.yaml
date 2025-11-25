@@ -49,7 +49,7 @@ jobs:
 
       - name: Run Radix Sort Test
         run: |
-          . setup.sh && python examples/radix_sort/main_piplined.py
+          . setup.sh && python examples/radix_sort/benchmark.py
 
       - name: Clean CMake Cache
         run: |

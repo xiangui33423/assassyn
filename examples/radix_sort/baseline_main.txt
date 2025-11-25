@@ -1,51 +1,8 @@
-Baseline Performance - main.py (After SRAM API Fix)
+Baseline Performance - main.py
 ======================================================================
-Date: 2025-01-22
-Implementation: examples/radix_sort/main.py
+Date: 2025-11-25 23:14:26
 Elements: 2048
-Passes: 8
-
-Performance Metrics:
-----------------------------------------------------------------------
-Total Cycles: 49,441
-Cycles per Pass: ~6,180
-Cycles per Element: 24.14
-
-Stage Breakdown (per pass, estimated):
-  - Reset: 1 cycle (0.02%)
-  - Read: 2,048 cycles (33.1%)
-  - Prefix Sum: 16 cycles (0.26%)
-  - Write (MemImpl):
-    - Init: 1 cycle
-    - Read-Write Loop: 4,096 cycles (66.3%)
-    - Reset Radix: 17 cycles (0.27%)
-
-Bottleneck Analysis:
-----------------------------------------------------------------------
-**Write Phase is the primary bottleneck (66% of runtime)**
-- Each element requires 2 cycles: 1 read + 1 write
-- Cannot overlap due to SRAM single-cycle latency
-- Optimization target: Pipeline write stage with dual-SRAM
-
-Hardware Resources:
-----------------------------------------------------------------------
-- SRAM: 16 KB (4096 words × 32 bits, 50% utilization for 2048 elements)
-- Registers: ~640 bits
-  - radix_reg: 512 bits (16 × 32 bits)
-  - State machines: 4 bits (SM_reg + SM_MemImpl)
-  - Address/control: ~124 bits
-
-Key Changes from Original:
-----------------------------------------------------------------------
-1. Updated SRAM.build() API (5 params → 4 params)
-2. Added explicit async_called() connection for MemUser
-3. Fixed MemImpl reset logic (overlapping conditions → mutually exclusive)
-4. Changed reset_cycle_reg from UInt(4) to UInt(5) to support 0-16 range
-5. Fixed type conversion for ping-pong buffer toggle (.bitcast(UInt(1)))
-
-Verification:
-----------------------------------------------------------------------
-✓ System builds successfully
-✓ Simulator runs to completion
-✓ All 8 passes execute correctly (bits 0-4, 4-8, ..., 28-32)
-✓ Final cycle count: 49,441 (within 0.04% of theoretical 49,424)
+Passes: 1
+Total Cycles: 6,178
+Cycles per Element: 3.02
+Wall-clock Time: 1.67s
