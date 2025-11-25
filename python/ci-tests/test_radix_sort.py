@@ -277,7 +277,7 @@ class Driver(Module):
                 )
                 offset_reg[0] = offset_reg[0] + UInt(data_width)(4)
                 addr_reg[0] = UInt(addr_width)(0) + (
-                    ~mem_pingpong_reg[0] * UInt(addr_width)(data_depth)
+                    (~mem_pingpong_reg[0]).bitcast(UInt(1)) * UInt(addr_width)(data_depth)
                 )[0 : (addr_width - 1)].bitcast(UInt(addr_width))
                 re[0] = Bits(1)(1)
                 we[0] = Bits(1)(0)
