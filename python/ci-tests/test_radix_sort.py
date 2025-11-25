@@ -245,9 +245,13 @@ class Driver(Module):
         # Connect SRAM output to MemUser input
         memory_user.async_called(rdata=numbers_mem.dout[0])
 
-        mem_start = UInt(addr_width)(0) + (
-            mem_pingpong_reg[0] * UInt(addr_width)(data_depth)
-        )[0 : (addr_width - 1)].bitcast(UInt(addr_width))
+        # Calculate memory range based on ping-pong buffer
+        # mem_pingpong_reg toggles between 0 and 1
+        # When 0: mem_start = 0, when 1: mem_start = data_depth
+        mem_start = mem_pingpong_reg[0].select(
+            UInt(addr_width)(data_depth),  # when 1
+            UInt(addr_width)(0)             # when 0
+        )
         mem_end = mem_start + UInt(addr_width)(data_depth)
 
         # Outer loop
